@@ -1,85 +1,88 @@
 <?php
-require_once __DIR__ . '/../config.php';
-require_once BASE_PATH . '/includes/auth.php';
+require_once __DIR__ . '/../includes/auth.php';
+require_once __DIR__ . '/../includes/db_functions.php';
 
-// Check if user is logged in and has Workshop Staff or Admin role
 require_role('Workshop Staff', 'Admin');
 
+$pageTitle = 'Open Maintenance Job';
 $message = '';
 $messageType = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $vehicleId = (int) $_POST['vehicle_id'];
-    $workshopId = (int) $_POST['workshop_id'];
+    $vehicleId  = (int) sanitizeInput($_POST['vehicle_id'] ?? '');
+    $workshopId = (int) sanitizeInput($_POST['workshop_id'] ?? '');
 
     try {
-        $pdo->beginTransaction();
+        // Validate inputs
+        if (!$vehicleId || !$workshopId) {
+            throw new Exception('Please select both vehicle and workshop.');
+        }
 
-        // 1. Check if vehicle exists and get its current status
-        $stmt = $pdo->prepare('SELECT id, status, registration_number FROM Vehicle WHERE id = ?');
-        $stmt->execute([$vehicleId]);
-        $vehicle = $stmt->fetch();
-
+        // 1. Verify vehicle exists and status
+        $vehicle = executeQuery(
+            'SELECT id, status, registration_number FROM Vehicle WHERE id = ?',
+            [$vehicleId],
+            false
+        );
         if (!$vehicle) {
             throw new Exception('Vehicle not found.');
         }
+        if (strcasecmp($vehicle['status'], 'Under Maintenance') === 0) {
+            throw new Exception('Vehicle is already Under Maintenance.');
+        }
 
-        // 2. Check if workshop exists
-        $stmt = $pdo->prepare('SELECT id, workshop_name FROM Workshops WHERE id = ?');
-        $stmt->execute([$workshopId]);
-        $workshop = $stmt->fetch();
-
+        // 2. Verify workshop exists
+        $workshop = executeQuery(
+            'SELECT id, workshop_name FROM Workshops WHERE id = ?',
+            [$workshopId],
+            false
+        );
         if (!$workshop) {
             throw new Exception('Workshop not found.');
         }
 
-        // 3. Create the maintenance job
-        $stmt = $pdo->prepare('
-            INSERT INTO Maintenance_Jobs (vehicle_id, workshop_id, date_opened, date_closed, total_cost, down_time_hours)
-            VALUES (?, ?, NOW(), NULL, NULL, NULL)
-        ');
-        $stmt->execute([$vehicleId, $workshopId]);
+        // 3. Create job + update vehicle in one transaction
+        $queries = [
+            [
+                'sql' => 'INSERT INTO Maintenance_Jobs (vehicle_id, workshop_id, date_opened) VALUES (?, ?, NOW())',
+                'params' => [$vehicleId, $workshopId]
+            ],
+            [
+                'sql' => "UPDATE Vehicle SET status = 'Under Maintenance' WHERE id = ?",
+                'params' => [$vehicleId]
+            ]
+        ];
 
-        // 4. Update vehicle status to "Under Maintenance"
-        $stmt = $pdo->prepare("UPDATE Vehicle SET status = 'Under Maintenance' WHERE id = ?");
-        $stmt->execute([$vehicleId]);
+        executeTransaction($queries);
 
-        $pdo->commit();
         $message = 'Maintenance job opened successfully for vehicle ' . htmlspecialchars($vehicle['registration_number']) . '.';
         $messageType = 'success';
     } catch (Exception $e) {
-        $pdo->rollBack();
         $message = 'Error: ' . htmlspecialchars($e->getMessage());
         $messageType = 'error';
     }
 }
 
-// Fetch list of vehicles for the dropdown
-$vehiclesStmt = $pdo->prepare('
-    SELECT v.id, v.registration_number, v.status, vm.model_name
-    FROM Vehicle v
-    JOIN Vehicle_Models vm ON v.model_id = vm.id
-    ORDER BY v.registration_number
-');
-$vehiclesStmt->execute();
-$vehicles = $vehiclesStmt->fetchAll();
+// Fetch vehicles and workshops for selectors
+$vehicles = executeQuery(
+    'SELECT v.id, v.registration_number, v.status, vm.model_name
+     FROM Vehicle v
+     JOIN Vehicle_Models vm ON v.model_id = vm.id
+     ORDER BY v.registration_number'
+);
 
-// Fetch list of workshops for the dropdown
-$workshopsStmt = $pdo->prepare('
-    SELECT w.id, w.workshop_name, d.depot_name
-    FROM Workshops w
-    JOIN Depot d ON w.depot_id = d.id
-    ORDER BY w.workshop_name
-');
-$workshopsStmt->execute();
-$workshops = $workshopsStmt->fetchAll();
+$workshops = executeQuery(
+    'SELECT w.id, w.workshop_name, d.depot_name
+     FROM Workshops w
+     JOIN Depot d ON w.depot_id = d.id
+     ORDER BY w.workshop_name'
+);
 
-$pageTitle = 'Open Maintenance Job';
+include __DIR__ . '/../includes/header.php';
 ?>
-<?php include BASE_PATH . '/includes/header.php'; ?>
 <div class="container" style="max-width: 600px; margin: 20px auto;">
     <h1>Open a New Maintenance Job</h1>
-    
+
     <?php if (!empty($message)): ?>
         <div style="padding: 15px; margin: 20px 0; border-radius: 5px; <?php echo $messageType === 'success' ? 'background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb;' : 'background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb;'; ?>">
             <?php echo $message; ?>
@@ -116,5 +119,4 @@ $pageTitle = 'Open Maintenance Job';
 
     <a href="<?php echo base_url(); ?>/index.php" style="display: block; margin-top: 20px; color: #007bff; text-decoration: none;">← Back to Dashboard</a>
 </div>
-<?php include BASE_PATH . '/includes/footer.php'; ?>
-
+<?php include __DIR__ . '/../includes/footer.php'; ?>
