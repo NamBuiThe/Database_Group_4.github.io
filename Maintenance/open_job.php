@@ -1,4 +1,4 @@
-<?php
+<?php name=maintenance/open_job.php
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/db_functions.php';
 
@@ -13,12 +13,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $workshopId = (int) sanitizeInput($_POST['workshop_id'] ?? '');
 
     try {
-        // Validate inputs
         if (!$vehicleId || !$workshopId) {
-            throw new Exception('Please select both vehicle and workshop.');
+            throw new Exception('Please select both a vehicle and a workshop.');
         }
 
-        // 1. Verify vehicle exists and status
+        // Verify vehicle exists and is not already under maintenance
         $vehicle = executeQuery(
             'SELECT id, status, registration_number FROM Vehicle WHERE id = ?',
             [$vehicleId],
@@ -31,7 +30,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             throw new Exception('Vehicle is already Under Maintenance.');
         }
 
-        // 2. Verify workshop exists
+        // Verify workshop exists
         $workshop = executeQuery(
             'SELECT id, workshop_name FROM Workshops WHERE id = ?',
             [$workshopId],
@@ -41,16 +40,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             throw new Exception('Workshop not found.');
         }
 
-        // 3. Create job + update vehicle in one transaction
+        // Create job and update vehicle status atomically
         $queries = [
             [
-                'sql' => 'INSERT INTO Maintenance_Jobs (vehicle_id, workshop_id, date_opened) VALUES (?, ?, NOW())',
-                'params' => [$vehicleId, $workshopId]
+                'sql'    => 'INSERT INTO Maintenance_Jobs (vehicle_id, workshop_id, date_opened) VALUES (?, ?, NOW())',
+                'params' => [$vehicleId, $workshopId],
             ],
             [
-                'sql' => "UPDATE Vehicle SET status = 'Under Maintenance' WHERE id = ?",
-                'params' => [$vehicleId]
-            ]
+                'sql'    => "UPDATE Vehicle SET status = 'Under Maintenance' WHERE id = ?",
+                'params' => [$vehicleId],
+            ],
         ];
 
         executeTransaction($queries);
