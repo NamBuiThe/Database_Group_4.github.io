@@ -1,6 +1,6 @@
 <?php
-require '../config.php'; //from person 1
-require '../includes/auth.php'; //from person 1
+require_once __DIR__ . '/../config.php';
+require_once BASE_PATH . '/includes/auth.php';
 
 // Check if user is logged in and has Workshop Staff or Admin role
 require_role('Workshop Staff', 'Admin');
@@ -85,80 +85,62 @@ $partsStmt = $pdo->prepare('
 ');
 $partsStmt->execute();
 $parts = $partsStmt->fetchAll();
+
+$pageTitle = 'Add Part to Maintenance Activity';
 ?>
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Add Part to Maintenance Activity</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 20px; }
-        .container { max-width: 700px; margin: 0 auto; }
-        form { border: 1px solid #ccc; padding: 20px; border-radius: 5px; }
-        label { display: block; margin-top: 15px; font-weight: bold; }
-        select, input { width: 100%; padding: 8px; margin-top: 5px; box-sizing: border-box; }
-        button { margin-top: 20px; padding: 10px 20px; background-color: #008CBA; color: white; border: none; border-radius: 5px; cursor: pointer; }
-        button:hover { background-color: #007399; }
-        .message { padding: 15px; margin-top: 20px; border-radius: 5px; }
-        .success { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
-        .error { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
-        a { display: block; margin-top: 20px; color: #007bff; text-decoration: none; }
-        a:hover { text-decoration: underline; }
-        .form-row { display: flex; gap: 15px; }
-        .form-row > div { flex: 1; }
-        .info { background-color: #e7f3ff; padding: 10px; border-radius: 5px; margin-top: 10px; font-size: 14px; }
-    </style>
-</head>
-<body>
-  <?php include '../includes/header.php'; ?>
-  
-  <div class="container">
+<?php include BASE_PATH . '/includes/header.php'; ?>
+<div class="container" style="max-width: 700px; margin: 20px auto;">
     <h1>Add Part to Maintenance Activity</h1>
     
     <?php if (!empty($message)): ?>
-        <div class="message <?php echo $messageType; ?>">
+        <div style="padding: 15px; margin: 20px 0; border-radius: 5px; <?php echo $messageType === 'success' ? 'background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb;' : 'background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb;'; ?>">
             <?php echo $message; ?>
         </div>
     <?php endif; ?>
 
-    <form method="post">
-        <label for="activity_id">Select Maintenance Activity:</label>
-        <select name="activity_id" id="activity_id" required>
-            <option value="">-- Choose an activity --</option>
-            <?php foreach ($activities as $activity): ?>
-                <option value="<?php echo htmlspecialchars($activity['id']); ?>">
-                    <?php echo htmlspecialchars('Job #' . $activity['job_id'] . ' - ' . $activity['registration_number'] . ' - ' . $activity['activity_type']); ?>
-                </option>
-            <?php endforeach; ?>
-        </select>
-        <div class="info">Select an active maintenance activity to add a part to.</div>
-
-        <label for="part_id">Select Part:</label>
-        <select name="part_id" id="part_id" required>
-            <option value="">-- Choose a part --</option>
-            <?php foreach ($parts as $part): ?>
-                <option value="<?php echo htmlspecialchars($part['part_id']); ?>">
-                    <?php echo htmlspecialchars($part['part_number'] . ' - ' . $part['description'] . ' (Std: $' . number_format($part['standard_unit_price'], 2) . ')'); ?>
-                </option>
-            <?php endforeach; ?>
-        </select>
-
-        <div class="form-row">
-            <div>
-                <label for="quantity_used">Quantity Used:</label>
-                <input type="number" name="quantity_used" id="quantity_used" min="1" value="1" required>
-            </div>
-            <div>
-                <label for="unit_price_charged">Unit Price Charged ($):</label>
-                <input type="number" name="unit_price_charged" id="unit_price_charged" step="0.01" min="0" value="0.00" required>
+    <form method="post" style="border: 1px solid #ccc; padding: 20px; border-radius: 5px;">
+        <div style="margin-bottom: 20px;">
+            <label for="activity_id" style="display: block; font-weight: bold; margin-bottom: 8px;">Select Maintenance Activity:</label>
+            <select name="activity_id" id="activity_id" required style="width: 100%; padding: 8px; box-sizing: border-box;">
+                <option value="">-- Choose an activity --</option>
+                <?php foreach ($activities as $activity): ?>
+                    <option value="<?php echo htmlspecialchars($activity['id']); ?>">
+                        <?php echo htmlspecialchars('Job #' . $activity['job_id'] . ' - ' . $activity['registration_number'] . ' - ' . $activity['activity_type']); ?>
+                    </option>
+                <?php endforeach; ?>
+            </select>
+            <div style="background-color: #e7f3ff; padding: 10px; border-radius: 5px; margin-top: 10px; font-size: 14px;">
+                Select an active maintenance activity to add a part to.
             </div>
         </div>
 
-        <button type="submit">Add Part</button>
+        <div style="margin-bottom: 20px;">
+            <label for="part_id" style="display: block; font-weight: bold; margin-bottom: 8px;">Select Part:</label>
+            <select name="part_id" id="part_id" required style="width: 100%; padding: 8px; box-sizing: border-box;">
+                <option value="">-- Choose a part --</option>
+                <?php foreach ($parts as $part): ?>
+                    <option value="<?php echo htmlspecialchars($part['part_id']); ?>">
+                        <?php echo htmlspecialchars($part['part_number'] . ' - ' . $part['description'] . ' (Std: $' . number_format($part['standard_unit_price'], 2) . ')'); ?>
+                    </option>
+                <?php endforeach; ?>
+            </select>
+        </div>
+
+        <div style="display: flex; gap: 15px; margin-bottom: 20px;">
+            <div style="flex: 1;">
+                <label for="quantity_used" style="display: block; font-weight: bold; margin-bottom: 8px;">Quantity Used:</label>
+                <input type="number" name="quantity_used" id="quantity_used" min="1" value="1" required style="width: 100%; padding: 8px; box-sizing: border-box;">
+            </div>
+            <div style="flex: 1;">
+                <label for="unit_price_charged" style="display: block; font-weight: bold; margin-bottom: 8px;">Unit Price Charged ($):</label>
+                <input type="number" name="unit_price_charged" id="unit_price_charged" step="0.01" min="0" value="0.00" required style="width: 100%; padding: 8px; box-sizing: border-box;">
+            </div>
+        </div>
+
+        <button type="submit" style="padding: 10px 20px; background-color: #008CBA; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold;">Add Part</button>
     </form>
 
-    <a href="../index.php">← Back to Dashboard</a>
-  </div>
-  
-  <?php include '../includes/footer.php'; ?>
-</body>
-</html>
+    <a href="<?php echo base_url(); ?>/index.php" style="display: block; margin-top: 20px; color: #007bff; text-decoration: none;">← Back to Dashboard</a>
+</div>
+<?php include BASE_PATH . '/includes/footer.php'; ?>
+
