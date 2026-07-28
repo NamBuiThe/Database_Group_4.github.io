@@ -1,6 +1,6 @@
 <?php
-require '../config.php'; //from person 1
-require '../includes/auth.php'; //from person 1
+require_once __DIR__ . '/../config.php';
+require_once BASE_PATH . '/includes/auth.php';
 
 // Check if user is logged in and has Workshop Staff or Admin role
 require_role('Workshop Staff', 'Admin');
@@ -87,75 +87,55 @@ $jobsStmt = $pdo->prepare('
 ');
 $jobsStmt->execute();
 $openJobs = $jobsStmt->fetchAll();
+
+$pageTitle = 'Close Maintenance Job';
 ?>
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Close Maintenance Job</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 20px; }
-        .container { max-width: 700px; margin: 0 auto; }
-        form { border: 1px solid #ccc; padding: 20px; border-radius: 5px; }
-        label { display: block; margin-top: 15px; font-weight: bold; }
-        select, input { width: 100%; padding: 8px; margin-top: 5px; box-sizing: border-box; }
-        button { margin-top: 20px; padding: 10px 20px; background-color: #4CAF50; color: white; border: none; border-radius: 5px; cursor: pointer; }
-        button:hover { background-color: #45a049; }
-        .message { padding: 15px; margin-top: 20px; border-radius: 5px; }
-        .success { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
-        .error { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
-        a { display: block; margin-top: 20px; color: #007bff; text-decoration: none; }
-        a:hover { text-decoration: underline; }
-        table { width: 100%; margin-top: 20px; border-collapse: collapse; }
-        table th, table td { border: 1px solid #ddd; padding: 12px; text-align: left; }
-        table th { background-color: #f2f2f2; }
-    </style>
-</head>
-<body>
-  <?php include '../includes/header.php'; ?>
-  
-  <div class="container">
+<?php include BASE_PATH . '/includes/header.php'; ?>
+<div class="container" style="max-width: 700px; margin: 20px auto;">
     <h1>Close a Maintenance Job</h1>
     
     <?php if (!empty($message)): ?>
-        <div class="message <?php echo $messageType; ?>">
+        <div style="padding: 15px; margin: 20px 0; border-radius: 5px; <?php echo $messageType === 'success' ? 'background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb;' : 'background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb;'; ?>">
             <?php echo $message; ?>
         </div>
     <?php endif; ?>
 
-    <form method="post">
-        <label for="job_id">Select Job to Close:</label>
-        <select name="job_id" id="job_id" required>
-            <option value="">-- Choose a job --</option>
-            <?php foreach ($openJobs as $job): ?>
-                <option value="<?php echo htmlspecialchars($job['id']); ?>">
-                    <?php echo htmlspecialchars('Job #' . $job['id'] . ' - ' . $job['registration_number'] . ' (' . $job['model_name'] . ')'); ?>
-                </option>
-            <?php endforeach; ?>
-        </select>
+    <form method="post" style="border: 1px solid #ccc; padding: 20px; border-radius: 5px; margin-bottom: 30px;">
+        <div style="margin-bottom: 20px;">
+            <label for="job_id" style="display: block; font-weight: bold; margin-bottom: 8px;">Select Job to Close:</label>
+            <select name="job_id" id="job_id" required style="width: 100%; padding: 8px; box-sizing: border-box;">
+                <option value="">-- Choose a job --</option>
+                <?php foreach ($openJobs as $job): ?>
+                    <option value="<?php echo htmlspecialchars($job['id']); ?>">
+                        <?php echo htmlspecialchars('Job #' . $job['id'] . ' - ' . $job['registration_number'] . ' (' . $job['model_name'] . ')'); ?>
+                    </option>
+                <?php endforeach; ?>
+            </select>
+        </div>
 
-        <button type="submit">Close Job</button>
+        <button type="submit" style="padding: 10px 20px; background-color: #4CAF50; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold;">Close Job</button>
     </form>
 
     <h2>Open Maintenance Jobs</h2>
     <?php if (count($openJobs) > 0): ?>
-        <table>
+        <table style="width: 100%; border-collapse: collapse; margin-top: 20px;">
             <thead>
-                <tr>
-                    <th>Job ID</th>
-                    <th>Vehicle</th>
-                    <th>Model</th>
-                    <th>Workshop</th>
-                    <th>Date Opened</th>
+                <tr style="background-color: #f2f2f2;">
+                    <th style="border: 1px solid #ddd; padding: 12px; text-align: left;">Job ID</th>
+                    <th style="border: 1px solid #ddd; padding: 12px; text-align: left;">Vehicle</th>
+                    <th style="border: 1px solid #ddd; padding: 12px; text-align: left;">Model</th>
+                    <th style="border: 1px solid #ddd; padding: 12px; text-align: left;">Workshop</th>
+                    <th style="border: 1px solid #ddd; padding: 12px; text-align: left;">Date Opened</th>
                 </tr>
             </thead>
             <tbody>
                 <?php foreach ($openJobs as $job): ?>
                     <tr>
-                        <td><?php echo htmlspecialchars($job['id']); ?></td>
-                        <td><?php echo htmlspecialchars($job['registration_number']); ?></td>
-                        <td><?php echo htmlspecialchars($job['model_name']); ?></td>
-                        <td><?php echo htmlspecialchars($job['workshop_name']); ?></td>
-                        <td><?php echo htmlspecialchars(date('Y-m-d H:i', strtotime($job['date_opened']))); ?></td>
+                        <td style="border: 1px solid #ddd; padding: 12px;"><?php echo htmlspecialchars($job['id']); ?></td>
+                        <td style="border: 1px solid #ddd; padding: 12px;"><?php echo htmlspecialchars($job['registration_number']); ?></td>
+                        <td style="border: 1px solid #ddd; padding: 12px;"><?php echo htmlspecialchars($job['model_name']); ?></td>
+                        <td style="border: 1px solid #ddd; padding: 12px;"><?php echo htmlspecialchars($job['workshop_name']); ?></td>
+                        <td style="border: 1px solid #ddd; padding: 12px;"><?php echo htmlspecialchars(date('Y-m-d H:i', strtotime($job['date_opened']))); ?></td>
                     </tr>
                 <?php endforeach; ?>
             </tbody>
@@ -164,9 +144,6 @@ $openJobs = $jobsStmt->fetchAll();
         <p>No open maintenance jobs.</p>
     <?php endif; ?>
 
-    <a href="../index.php">← Back to Dashboard</a>
-  </div>
-  
-  <?php include '../includes/footer.php'; ?>
-</body>
-</html>
+    <a href="<?php echo base_url(); ?>/index.php" style="display: block; margin-top: 20px; color: #007bff; text-decoration: none;">← Back to Dashboard</a>
+</div>
+<?php include BASE_PATH . '/includes/footer.php'; ?>
