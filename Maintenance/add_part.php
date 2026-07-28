@@ -1,61 +1,65 @@
 <?php
-require_once __DIR__ . '/../config.php';
-require_once BASE_PATH . '/includes/auth.php';
+require_once __DIR__ . '/../includes/auth.php';
+require_once __DIR__ . '/../includes/db_functions.php';
 
-// Check if user is logged in and has Workshop Staff or Admin role
 require_role('Workshop Staff', 'Admin');
 
+$pageTitle = 'Add Part to Maintenance Activity';
 $message = '';
 $messageType = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $activityId = (int) $_POST['activity_id'];
-    $partId = (int) $_POST['part_id'];
-    $quantityUsed = (int) $_POST['quantity_used'];
-    $unitPriceCharged = (float) $_POST['unit_price_charged'];
+    $activityId = (int) sanitizeInput($_POST['activity_id'] ?? '');
+    $partId = (int) sanitizeInput($_POST['part_id'] ?? '');
+    $quantityUsed = (int) sanitizeInput($_POST['quantity_used'] ?? '0');
+    $unitPriceCharged = (float) sanitizeInput($_POST['unit_price_charged'] ?? '0');
 
     try {
-        // 1. Verify activity exists
-        $stmt = $pdo->prepare('
-            SELECT ma.id, ma.job_id, mj.vehicle_id
-            FROM Maintenance_Activities ma
-            JOIN Maintenance_Jobs mj ON ma.job_id = mj.id
-            WHERE ma.id = ?
-        ');
-        $stmt->execute([$activityId]);
-        $activity = $stmt->fetch();
+        if (!$activityId || !$partId || $quantityUsed <= 0) {
+            throw new Exception('Please select activity, part and enter a valid quantity.');
+        }
 
+        // 1. Verify activity exists and belongs to an open job
+        $activity = executeQuery(
+            'SELECT ma.id, ma.job_id, mj.vehicle_id
+             FROM Maintenance_Activities ma
+             JOIN Maintenance_Jobs mj ON ma.job_id = mj.id
+             WHERE ma.id = ? AND mj.date_closed IS NULL',
+            [$activityId],
+            false
+        );
         if (!$activity) {
-            throw new Exception('Maintenance activity not found.');
+            throw new Exception('Maintenance activity not found or job already closed.');
         }
 
         // 2. Verify part exists
-        $stmt = $pdo->prepare('SELECT part_id, description FROM Parts WHERE part_id = ?');
-        $stmt->execute([$partId]);
-        $part = $stmt->fetch();
-
+        $part = executeQuery(
+            'SELECT part_id, description, standard_unit_price FROM Parts WHERE part_id = ?',
+            [$partId],
+            false
+        );
         if (!$part) {
             throw new Exception('Part not found.');
         }
 
-        // 3. Check if this part is already added to this activity (unique constraint)
-        $stmt = $pdo->prepare('
-            SELECT id FROM Activity_Parts
-            WHERE activity_id = ? AND part_id = ?
-        ');
-        $stmt->execute([$activityId, $partId]);
-        $existingPart = $stmt->fetch();
-
-        if ($existingPart) {
-            throw new Exception('This part has already been added to this activity. Please use a different part or activity.');
+        // 3. Check duplicate
+        $existing = executeQuery(
+            'SELECT id FROM Activity_Parts WHERE activity_id = ? AND part_id = ?',
+            [$activityId, $partId],
+            false
+        );
+        if ($existing) {
+            throw new Exception('This part has already been added to this activity.');
         }
 
-        // 4. Insert the part into the activity
-        $stmt = $pdo->prepare('
-            INSERT INTO Activity_Parts (activity_id, part_id, quantity_used, unit_price_charged)
-            VALUES (?, ?, ?, ?)
-        ');
-        $stmt->execute([$activityId, $partId, $quantityUsed, $unitPriceCharged]);
+        // 4. Insert part (single-statement transaction for consistency)
+        $queries = [
+            [
+                'sql' => 'INSERT INTO Activity_Parts (activity_id, part_id, quantity_used, unit_price_charged) VALUES (?, ?, ?, ?)',
+                'params' => [$activityId, $partId, $quantityUsed, $unitPriceCharged]
+            ]
+        ];
+        executeTransaction($queries);
 
         $message = 'Part ' . htmlspecialchars($part['description']) . ' added successfully (Qty: ' . $quantityUsed . ', Unit Price: $' . number_format($unitPriceCharged, 2) . ').';
         $messageType = 'success';
@@ -65,33 +69,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-// Fetch list of maintenance activities
-$activitiesStmt = $pdo->prepare('
-    SELECT ma.id, ma.activity_type, mj.id as job_id, v.registration_number
-    FROM Maintenance_Activities ma
-    JOIN Maintenance_Jobs mj ON ma.job_id = mj.id
-    JOIN Vehicle v ON mj.vehicle_id = v.id
-    WHERE mj.date_closed IS NULL
-    ORDER BY mj.date_opened DESC
-');
-$activitiesStmt->execute();
-$activities = $activitiesStmt->fetchAll();
+// Fetch active maintenance activities and parts
+$activities = executeQuery(
+    'SELECT ma.id, ma.activity_type, mj.id as job_id, v.registration_number
+     FROM Maintenance_Activities ma
+     JOIN Maintenance_Jobs mj ON ma.job_id = mj.id
+     JOIN Vehicle v ON mj.vehicle_id = v.id
+     WHERE mj.date_closed IS NULL
+     ORDER BY mj.date_opened DESC'
+);
 
-// Fetch list of parts
-$partsStmt = $pdo->prepare('
-    SELECT part_id, part_number, description, standard_unit_price
-    FROM Parts
-    ORDER BY description
-');
-$partsStmt->execute();
-$parts = $partsStmt->fetchAll();
+$parts = executeQuery(
+    'SELECT part_id, part_number, description, standard_unit_price
+     FROM Parts
+     ORDER BY description'
+);
 
-$pageTitle = 'Add Part to Maintenance Activity';
+include __DIR__ . '/../includes/header.php';
 ?>
-<?php include BASE_PATH . '/includes/header.php'; ?>
 <div class="container" style="max-width: 700px; margin: 20px auto;">
     <h1>Add Part to Maintenance Activity</h1>
-    
+
     <?php if (!empty($message)): ?>
         <div style="padding: 15px; margin: 20px 0; border-radius: 5px; <?php echo $messageType === 'success' ? 'background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb;' : 'background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb;'; ?>">
             <?php echo $message; ?>
@@ -142,5 +140,4 @@ $pageTitle = 'Add Part to Maintenance Activity';
 
     <a href="<?php echo base_url(); ?>/index.php" style="display: block; margin-top: 20px; color: #007bff; text-decoration: none;">← Back to Dashboard</a>
 </div>
-<?php include BASE_PATH . '/includes/footer.php'; ?>
-
+<?php include __DIR__ . '/../includes/footer.php'; ?>
