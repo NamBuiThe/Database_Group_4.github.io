@@ -16,7 +16,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             throw new Exception('Please select a job to close.');
         }
 
-        // 1. Verify job exists and is open
+        // Verify job exists and is open
         $job = executeQuery(
             'SELECT mj.id, mj.vehicle_id, mj.date_opened, mj.date_closed, v.registration_number
              FROM Maintenance_Jobs mj
@@ -32,7 +32,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             throw new Exception('This job has already been closed.');
         }
 
-        // 2. Calculate labour cost (may be null => 0)
+        // Calculate labour cost
         $labourResult = executeQuery(
             'SELECT COALESCE(SUM(am.labour_hours * sl.hourly_rate), 0) AS labour_cost
              FROM Activity_Mechanics am
@@ -45,23 +45,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         );
         $labourCost = (float) ($labourResult['labour_cost'] ?? 0.0);
 
-        // 3. Calculate down time in hours
+        // Calculate down time in hours (fractional)
         $dateOpened = new DateTime($job['date_opened']);
         $now = new DateTime();
         $interval = $now->diff($dateOpened);
         $downTimeHours = ($interval->days * 24) + $interval->h + ($interval->i / 60.0);
         $downTimeHours = round($downTimeHours, 2);
 
-        // 4. Update job and vehicle atomically
+        // Update job and vehicle atomically
         $queries = [
             [
-                'sql' => 'UPDATE Maintenance_Jobs SET date_closed = NOW(), total_cost = ?, down_time_hours = ? WHERE id = ?',
-                'params' => [$labourCost, $downTimeHours, $jobId]
+                'sql'    => 'UPDATE Maintenance_Jobs SET date_closed = NOW(), total_cost = ?, down_time_hours = ? WHERE id = ?',
+                'params' => [$labourCost, $downTimeHours, $jobId],
             ],
             [
-                'sql' => "UPDATE Vehicle SET status = 'Available' WHERE id = ?",
-                'params' => [$job['vehicle_id']]
-            ]
+                'sql'    => "UPDATE Vehicle SET status = 'Available' WHERE id = ?",
+                'params' => [$job['vehicle_id']],
+            ],
         ];
 
         executeTransaction($queries);
@@ -74,7 +74,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-// Fetch open jobs for selection and listing
+// Fetch open jobs
 $openJobs = executeQuery(
     'SELECT mj.id, mj.vehicle_id, v.registration_number, vm.model_name, w.workshop_name, mj.date_opened
      FROM Maintenance_Jobs mj
