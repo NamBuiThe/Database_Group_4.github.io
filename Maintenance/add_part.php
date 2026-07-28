@@ -19,7 +19,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             throw new Exception('Please select activity, part and enter a valid quantity.');
         }
 
-        // 1. Verify activity exists and belongs to an open job
+        // Verify activity exists and belongs to an open job
         $activity = executeQuery(
             'SELECT ma.id, ma.job_id, mj.vehicle_id
              FROM Maintenance_Activities ma
@@ -32,7 +32,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             throw new Exception('Maintenance activity not found or job already closed.');
         }
 
-        // 2. Verify part exists
+        // Verify part exists
         $part = executeQuery(
             'SELECT part_id, description, standard_unit_price FROM Parts WHERE part_id = ?',
             [$partId],
@@ -42,7 +42,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             throw new Exception('Part not found.');
         }
 
-        // 3. Check duplicate
+        // Check duplicate entry
         $existing = executeQuery(
             'SELECT id FROM Activity_Parts WHERE activity_id = ? AND part_id = ?',
             [$activityId, $partId],
@@ -52,12 +52,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             throw new Exception('This part has already been added to this activity.');
         }
 
-        // 4. Insert part (single-statement transaction for consistency)
+        // Insert part
         $queries = [
             [
-                'sql' => 'INSERT INTO Activity_Parts (activity_id, part_id, quantity_used, unit_price_charged) VALUES (?, ?, ?, ?)',
-                'params' => [$activityId, $partId, $quantityUsed, $unitPriceCharged]
-            ]
+                'sql'    => 'INSERT INTO Activity_Parts (activity_id, part_id, quantity_used, unit_price_charged) VALUES (?, ?, ?, ?)',
+                'params' => [$activityId, $partId, $quantityUsed, $unitPriceCharged],
+            ],
         ];
         executeTransaction($queries);
 
@@ -69,7 +69,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-// Fetch active maintenance activities and parts
+// Fetch active activities and parts
 $activities = executeQuery(
     'SELECT ma.id, ma.activity_type, mj.id as job_id, v.registration_number
      FROM Maintenance_Activities ma
