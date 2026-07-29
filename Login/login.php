@@ -1,10 +1,14 @@
 <?php
 /**
  * login.php — Authenticates users against the Users table.
- * On success: stores user info in $_SESSION and redirects to index.php.
  */
 
 require_once __DIR__ . '/config.php';
+
+// ── MUST start session before any $_SESSION access ──
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
 
 // If already logged in, go to dashboard
 if (isset($_SESSION['user_id'])) {
