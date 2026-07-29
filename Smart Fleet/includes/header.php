@@ -78,7 +78,8 @@ if (!isset($pageTitle)) $pageTitle = 'Smart Fleet';
             box-shadow: 0 4px 12px rgba(0,0,0,0.15);
             border-radius: 8px;
             overflow: hidden;
-            margin-top: 4px;
+            margin-top: 0; /* Changed this */
+            padding-top: 4px; /* Added this to bridge the gap */
         }
         .navbar-nav > div:hover .dropdown-menu {
             display: block;

@@ -7,13 +7,34 @@ $pageTitle = 'Open Maintenance Job';
 $message = '';
 $msgType = '';
 
+// Fetch activity types and required certifications for the form
+$activityTypes = [
+    'Routine Inspection', 'Preventative Servicing', 'Diagnostic Testing',
+    'Emergency Repair', 'Component Replacement', 'EV Battery / Electrical Repair',
+    'Refrigeration System Repair', 'Heavy Vehicle Repair'
+];
+
+// Map activity types to the required certification ID from your Certifications table
+$certMap = [
+    'Routine Inspection' => 6,
+    'Preventative Servicing' => 6,
+    'Diagnostic Testing' => 6,
+    'Emergency Repair' => 6,
+    'Component Replacement' => 6,
+    'EV Battery / Electrical Repair' => 7,
+    'Refrigeration System Repair' => 8,
+    'Heavy Vehicle Repair' => 9
+];
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $vehicleId  = (int)$_POST['vehicle_id'];
     $workshopId = (int)$_POST['workshop_id'];
+    $activityType = $_POST['activity_type'] ?? '';
+    $diagnosticResult = $_POST['diagnostic_result'] ?? null;
 
     try {
-        if (!$vehicleId || !$workshopId) {
-            throw new Exception('Please select both a vehicle and a workshop.');
+        if (!$vehicleId || !$workshopId || !$activityType) {
+            throw new Exception('Please select vehicle, workshop, and activity type.');
         }
 
         $pdo->beginTransaction();
@@ -29,9 +50,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute([$workshopId]);
         if (!$stmt->fetch()) throw new Exception('Workshop not found.');
 
+        // 1. Insert the Job
         $stmt = $pdo->prepare("INSERT INTO Maintenance_Jobs (vehicle_id, workshop_id, date_opened) VALUES (?, ?, NOW())");
         $stmt->execute([$vehicleId, $workshopId]);
+        $jobId = $pdo->lastInsertId();
 
+        // 2. Insert the Activity for this Job
+        $reqCertId = $certMap[$activityType] ?? 6;
+        $stmt = $pdo->prepare("
+            INSERT INTO Maintenance_Activities 
+            (job_id, activity_type, required_certification_id, diagnostic_result, repeat_fault, warranty_indicator) 
+            VALUES (?, ?, ?, ?, 0, 0)
+        ");
+        $stmt->execute([$jobId, $activityType, $reqCertId, $diagnosticResult]);
+
+        // 3. Update Vehicle Status
         $stmt = $pdo->prepare("UPDATE Vehicle SET status = 'Under Maintenance' WHERE id = ?");
         $stmt->execute([$vehicleId]);
 
@@ -91,7 +124,21 @@ require BASE_PATH . '/includes/header.php';
                 <?php endforeach; ?>
             </select>
         </div>
-        <button type="submit" class="btn btn-success">Open Job</button>
+        <div class="form-group">
+            <label>Initial Activity Type</label>
+            <select name="activity_type" required>
+                <option value="">-- Choose activity type --</option>
+                <?php foreach ($activityTypes as $type): ?>
+                    <option value="<?= htmlspecialchars($type) ?>"><?= htmlspecialchars($type) ?></option>
+                <?php endforeach; ?>
+            </select>
+            <div class="hint">An activity record will be created for this job so you can add parts to it immediately.</div>
+        </div>
+        <div class="form-group">
+            <label>Initial Diagnostic Result (Optional)</label>
+            <input type="text" name="diagnostic_result" placeholder="e.g., Check brake pads">
+        </div>
+        <button type="submit" class="btn btn-success">Open Job & Create Activity</button>
     </form>
 </div>
 
