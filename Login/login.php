@@ -190,7 +190,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <strong>Test accounts</strong> (all share the same password):<br>
             <code>hanoi.admin</code> · <code>hanoi.fleet_safety</code> · <code>hanoi.workshop</code><br>
             <code>danang.admin</code> · <code>hcm.admin</code> · <code>cantho.admin</code><br>
-            <small>If you forgot the password, run <code>generate_hash.php</code> to reset it.</small>
         </div>
     </div>
 </body>
