@@ -75,7 +75,7 @@ $options = [
     PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
     PDO::ATTR_EMULATE_PREPARES   => false,
     // Aiven cloud MySQL requires SSL
-    PDO::MYSQL_ATTR_SSL_CA       => '/etc/ssl/certs/ca-certificates.crt',  // Linux/XAMPP path
+    PDO::MYSQL_ATTR_SSL_CA => 'C:\xampp\php\extras\ssl\cacert.pem',
     // On Windows XAMPP, use: 'C:\xampp\php\extras\ssl\cacert.pem'
     // Download cacert.pem from https://curl.se/docs/caextract.html if missing
 ];
