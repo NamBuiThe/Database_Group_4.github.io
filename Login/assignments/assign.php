@@ -229,7 +229,7 @@ $vehicles = $stmt->fetchAll();
 
 // ── Eligible drivers (Active + valid license) ──
 $driverSql = "
-    SELECT id, full_name, license_type, license_expiry, employment_status,
+    SELECT d.id, d.full_name, d.license_type, d.license_expiry, d.employment_status,
            dep.depot_name
     FROM Driver d
     JOIN Depot dep ON d.depot_id = dep.id
