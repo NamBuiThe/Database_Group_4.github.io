@@ -189,12 +189,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             </div>
             <button type="submit" class="btn-login">Sign In</button>
         </form>
-
-        <div class="test-hint">
-            <strong>Test accounts</strong> (all share the same password):<br>
-            <code>hanoi.admin</code> · <code>hanoi.fleet_safety</code> · <code>hanoi.workshop</code><br>
-            <code>danang.admin</code> · <code>hcm.admin</code> · <code>cantho.admin</code><br>
-        </div>
     </div>
 </body>
 </html>
