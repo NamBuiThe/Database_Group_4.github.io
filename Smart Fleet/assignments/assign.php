@@ -35,6 +35,9 @@ $msgType  = '';
 //  POST HANDLER — The Transaction
 // ═══════════════════════════════════════════════════════════════
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!hash_equals($_SESSION['csrf_token'] ?? '', $_POST['csrf_token'] ?? '')) {
+        die('Invalid request.');
+    }
     $vehicleId = (int) ($_POST['vehicle_id'] ?? 0);
     $driverId  = (int) ($_POST['driver_id']  ?? 0);
 
@@ -193,7 +196,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         } catch (Exception $e) {
             $pdo->rollBack();
-            $message = '❌ ' . $e->getMessage();
+            $message = '❌ ' . htmlspecialchars($e->getMessage());
             $msgType = 'error';
         }
     } else {
@@ -268,6 +271,8 @@ $drivers = $stmt->fetchAll();
     </p>
 
     <form method="post" action="">
+        <?php $_SESSION['csrf_token'] = $_SESSION['csrf_token'] ?? bin2hex(random_bytes(32)); ?>
+        <input type="hidden" name="csrf_token" value="<?= $_SESSION['csrf_token'] ?>">
         <div class="form-group">
             <label for="vehicle_id">🚚 Vehicle</label>
             <select name="vehicle_id" id="vehicle_id" required>
