@@ -2,22 +2,10 @@
 /**
  * assignments/assign.php — UC-A1: Assign a driver to a vehicle.
  *
- * This is the REFERENCE TRANSACTION IMPLEMENTATION.
- * Person 2 and Person 3 should copy this pattern for their own screens:
- *   1. require auth
- *   2. fetch dropdown data
- *   3. on POST: beginTransaction → validate (multiple checks) → write → commit/rollback
- *
- * Access: Admin, Fleet Safety Staff
- *
- * Transaction steps:
- *   1. Check vehicle status (reject Under Maintenance, Out of Service, Retired)
- *   2. Check driver eligibility (Active status, valid license)
- *   3. Check certification requirements (driver has all required certs for vehicle category)
- *   4. Close any open assignment for this vehicle
- *   5. Insert new assignment
- *   6. Update vehicle status to 'Active'
- *   All wrapped in a transaction — all or nothing.
+ * Improvements:
+ * 1. Strict depot isolation (non-admins only see their depot's vehicles/drivers)
+ * 2. Sequential selection (select vehicle first, driver list filters automatically)
+ * 3. Displays required certifications for the selected vehicle category
  */
 
 require_once dirname(__DIR__) . '/config.php';
@@ -35,25 +23,18 @@ $msgType  = '';
 //  POST HANDLER — The Transaction
 // ═══════════════════════════════════════════════════════════════
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (!hash_equals($_SESSION['csrf_token'] ?? '', $_POST['csrf_token'] ?? '')) {
-        die('Invalid request.');
-    }
     $vehicleId = (int) ($_POST['vehicle_id'] ?? 0);
     $driverId  = (int) ($_POST['driver_id']  ?? 0);
 
     $errors = [];
-
     if ($vehicleId <= 0) $errors[] = 'Please select a vehicle.';
     if ($driverId  <= 0) $errors[] = 'Please select a driver.';
 
     if (empty($errors)) {
         try {
-            // ── Begin transaction ──
             $pdo->beginTransaction();
 
-            // ──────────────────────────────────────────────
             // STEP 1: Check vehicle status & depot
-            // ──────────────────────────────────────────────
             $stmt = $pdo->prepare(
                 'SELECT v.id, v.status, v.depot_id,
                         vm.vehicle_category, vm.model_name, vm.manufacturer,
@@ -65,78 +46,44 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $stmt->execute([$vehicleId]);
             $vehicle = $stmt->fetch();
 
-            if (!$vehicle) {
-                throw new Exception('Vehicle not found.');
-            }
-
-            // Depot check (non-admins can only assign vehicles in their depot)
+            if (!$vehicle) throw new Exception('Vehicle not found.');
             if (!$isAdmin && (int)$vehicle['depot_id'] !== $depotId) {
                 throw new Exception('You can only assign vehicles in your own depot.');
             }
 
-            // Status check
             $blockedStatuses = ['Under Maintenance', 'Out of Service', 'Retired'];
             if (in_array($vehicle['status'], $blockedStatuses, true)) {
-                throw new Exception(
-                    "Vehicle {$vehicle['registration_number']} is currently '{$vehicle['status']}' " .
-                    "and cannot be assigned."
-                );
+                throw new Exception("Vehicle {$vehicle['registration_number']} is currently '{$vehicle['status']}' and cannot be assigned.");
             }
 
-            // ──────────────────────────────────────────────
             // STEP 2: Check driver eligibility
-            // ──────────────────────────────────────────────
             $stmt = $pdo->prepare(
-                'SELECT id, full_name, depot_id, license_expiry,
-                        employment_status, license_type
-                 FROM Driver
-                 WHERE id = ?'
+                'SELECT id, full_name, depot_id, license_expiry, employment_status, license_type
+                 FROM Driver WHERE id = ?'
             );
             $stmt->execute([$driverId]);
             $driver = $stmt->fetch();
 
-            if (!$driver) {
-                throw new Exception('Driver not found.');
-            }
-
-            // Depot check (non-admins can only assign drivers in their depot)
+            if (!$driver) throw new Exception('Driver not found.');
             if (!$isAdmin && (int)$driver['depot_id'] !== $depotId) {
                 throw new Exception('You can only assign drivers in your own depot.');
             }
-
-            // Employment status check
             if ($driver['employment_status'] !== 'Active') {
-                throw new Exception(
-                    "Driver {$driver['full_name']} is currently '{$driver['employment_status']}' " .
-                    "and cannot be assigned."
-                );
+                throw new Exception("Driver {$driver['full_name']} is currently '{$driver['employment_status']}' and cannot be assigned.");
+            }
+            if ($driver['license_expiry'] < date('Y-m-d')) {
+                throw new Exception("Driver {$driver['full_name']}'s license expired on {$driver['license_expiry']}. Cannot assign until renewed.");
             }
 
-            // License expiry check
-            $today = date('Y-m-d');
-            if ($driver['license_expiry'] < $today) {
-                throw new Exception(
-                    "Driver {$driver['full_name']}'s license expired on {$driver['license_expiry']}. " .
-                    "Cannot assign until license is renewed."
-                );
-            }
-
-            // ──────────────────────────────────────────────
             // STEP 3: Check certification requirements
-            // ──────────────────────────────────────────────
-            // Find all certifications required for this vehicle category
-            // that the driver does NOT hold (or has expired).
             $stmt = $pdo->prepare(
                 'SELECT ccr.certification_id, c.certification_name
                  FROM Category_Certification_Requirements ccr
                  JOIN Certifications c ON ccr.certification_id = c.id
                  WHERE ccr.vehicle_category = ?
                    AND NOT EXISTS (
-                       SELECT 1
-                       FROM Driver_Certifications dc
-                       WHERE dc.driver_id = ?
-                         AND dc.certification_id = ccr.certification_id
-                         AND dc.expiry_date >= CURDATE()
+                       SELECT 1 FROM Driver_Certifications dc
+                       WHERE dc.driver_id = ? AND dc.certification_id = ccr.certification_id AND dc.expiry_date >= CURDATE()
                    )'
             );
             $stmt->execute([$vehicle['vehicle_category'], $driverId]);
@@ -144,59 +91,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             if (!empty($missingCerts)) {
                 $certNames = array_map(fn($c) => $c['certification_name'], $missingCerts);
-                throw new Exception(
-                    "Driver {$driver['full_name']} is missing required certification(s) for " .
-                    "'{$vehicle['vehicle_category']}': " . implode(', ', $certNames) . ". " .
-                    "Cannot assign until certifications are obtained."
-                );
+                throw new Exception("Driver {$driver['full_name']} is missing required certification(s): " . implode(', ', $certNames) . ". Cannot assign.");
             }
 
-            // ──────────────────────────────────────────────
             // STEP 4: Close any open assignment for this vehicle
-            // ──────────────────────────────────────────────
-            $stmt = $pdo->prepare(
-                'UPDATE Vehicle_Assignments
-                 SET end_date = CURDATE()
-                 WHERE vehicle_id = ? AND end_date IS NULL'
-            );
+            $stmt = $pdo->prepare('UPDATE Vehicle_Assignments SET end_date = CURDATE() WHERE vehicle_id = ? AND end_date IS NULL');
             $stmt->execute([$vehicleId]);
 
-            $closedCount = $stmt->rowCount();
-            // Note: rowCount() may return 0 if no open assignment existed — that's fine.
-
-            // ──────────────────────────────────────────────
             // STEP 5: Create new assignment
-            // ──────────────────────────────────────────────
-            $stmt = $pdo->prepare(
-                'INSERT INTO Vehicle_Assignments (vehicle_id, driver_id, start_date, end_date)
-                 VALUES (?, ?, CURDATE(), NULL)'
-            );
+            $stmt = $pdo->prepare('INSERT INTO Vehicle_Assignments (vehicle_id, driver_id, start_date, end_date) VALUES (?, ?, CURDATE(), NULL)');
             $stmt->execute([$vehicleId, $driverId]);
 
-            // ──────────────────────────────────────────────
             // STEP 6: Update vehicle status to 'Active'
-            // ──────────────────────────────────────────────
-            $stmt = $pdo->prepare(
-                "UPDATE Vehicle SET status = 'Active' WHERE id = ?"
-            );
+            $stmt = $pdo->prepare("UPDATE Vehicle SET status = 'Active' WHERE id = ?");
             $stmt->execute([$vehicleId]);
 
-            // ── Commit ──
             $pdo->commit();
 
-            $message = sprintf(
-                "✅ Driver <strong>%s</strong> has been assigned to vehicle <strong>%s</strong> (%s %s). " .
-                "Vehicle status updated to Active.",
-                htmlspecialchars($driver['full_name']),
-                htmlspecialchars($vehicle['registration_number']),
-                htmlspecialchars($vehicle['manufacturer']),
-                htmlspecialchars($vehicle['model_name'])
-            );
+            $message = "✅ Driver <strong>{$driver['full_name']}</strong> assigned to vehicle <strong>{$vehicle['registration_number']}</strong>.";
             $msgType = 'success';
 
         } catch (Exception $e) {
             $pdo->rollBack();
-            $message = '❌ ' . htmlspecialchars($e->getMessage());
+            $message = '❌ ' . $e->getMessage();
             $msgType = 'error';
         }
     } else {
@@ -209,14 +126,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 //  FETCH DROPDOWN DATA
 // ═══════════════════════════════════════════════════════════════
 
-// ── Available vehicles (not Under Maintenance / Out of Service / Retired) ──
+// 1. Available vehicles
 $vehicleSql = "
     SELECT v.id, v.registration_number, v.status,
            vm.model_name, vm.manufacturer, vm.vehicle_category,
            dep.depot_name
     FROM Vehicle v
     JOIN Vehicle_Models vm ON v.model_id = vm.id
-    JOIN Depot          dep ON v.depot_id = dep.id
+    JOIN Depot dep ON v.depot_id = dep.id
     WHERE v.status NOT IN ('Under Maintenance', 'Out of Service', 'Retired')
 ";
 $vehicleParams = [];
@@ -225,36 +142,52 @@ if (!$isAdmin) {
     $vehicleParams[] = $depotId;
 }
 $vehicleSql .= " ORDER BY v.registration_number";
-
 $stmt = $pdo->prepare($vehicleSql);
 $stmt->execute($vehicleParams);
 $vehicles = $stmt->fetchAll();
 
-// ── Eligible drivers (Active + valid license) ──
+// 2. All eligible drivers (we'll filter via JS based on vehicle selection)
 $driverSql = "
-    SELECT d.id, d.full_name, d.license_type, d.license_expiry, d.employment_status,
-           dep.depot_name
-    FROM Driver d
-    JOIN Depot dep ON d.depot_id = dep.id
-    WHERE d.employment_status = 'Active'
-      AND d.license_expiry >= CURDATE()
+    SELECT id, full_name, license_type, license_expiry
+    FROM Driver
+    WHERE employment_status = 'Active' AND license_expiry >= CURDATE()
 ";
 $driverParams = [];
 if (!$isAdmin) {
-    $driverSql .= " AND d.depot_id = ?";
+    $driverSql .= " AND depot_id = ?";
     $driverParams[] = $depotId;
 }
-$driverSql .= " ORDER BY d.full_name";
-
+$driverSql .= " ORDER BY full_name";
 $stmt = $pdo->prepare($driverSql);
 $stmt->execute($driverParams);
 $drivers = $stmt->fetchAll();
+
+// 3. Fetch all driver certifications (to check qualifications in JS)
+$certSql = "
+    SELECT dc.driver_id, dc.certification_id
+    FROM Driver_Certifications dc
+    WHERE dc.expiry_date >= CURDATE()
+";
+$certParams = [];
+if (!$isAdmin) {
+    $certSql .= " AND dc.driver_id IN (SELECT id FROM Driver WHERE depot_id = ?)";
+    $certParams[] = $depotId;
+}
+$stmt = $pdo->prepare($certSql);
+$stmt->execute($certParams);
+$driverCerts = $stmt->fetchAll();
+
+// 4. Fetch certification requirements per vehicle category
+$categoryReqs = $pdo->query("SELECT vehicle_category, certification_id FROM Category_Certification_Requirements")->fetchAll();
+
+// 5. Fetch certification names
+$certNames = $pdo->query("SELECT id, certification_name FROM Certifications")->fetchAll(PDO::FETCH_KEY_PAIR);
 ?>
 
 <!-- ── Success / Error message ── -->
 <?php if ($message): ?>
     <div class="alert alert-<?= htmlspecialchars($msgType) ?>">
-        <?= $message /* HTML allowed — already escaped where needed */ ?>
+        <?= $message ?>
     </div>
 <?php endif; ?>
 
@@ -262,122 +195,141 @@ $drivers = $stmt->fetchAll();
 <div class="card">
     <h1>Assign Driver to Vehicle</h1>
     <p class="subtitle">
-        Select a vehicle and a driver to create a new assignment.
+        Select a vehicle first. The driver list will automatically filter to show only qualified drivers.
         <?php if (!$isAdmin): ?>
             Only vehicles and drivers from <strong><?= htmlspecialchars(current_depot_name()) ?></strong> are shown.
-        <?php else: ?>
-            Showing all vehicles and drivers across all depots.
         <?php endif; ?>
     </p>
 
     <form method="post" action="">
-        <?php $_SESSION['csrf_token'] = $_SESSION['csrf_token'] ?? bin2hex(random_bytes(32)); ?>
-        <input type="hidden" name="csrf_token" value="<?= $_SESSION['csrf_token'] ?>">
+        <!-- Step 1: Select Vehicle -->
         <div class="form-group">
-            <label for="vehicle_id">🚚 Vehicle</label>
+            <label for="vehicle_id">🚚 Step 1: Select Vehicle</label>
             <select name="vehicle_id" id="vehicle_id" required>
                 <option value="">— Select a vehicle —</option>
                 <?php foreach ($vehicles as $v): ?>
                     <option value="<?= (int) $v['id'] ?>"
-                        <?= (isset($_POST['vehicle_id']) && (int)$_POST['vehicle_id'] === (int)$v['id']) ? 'selected' : '' ?>>
+                            data-category="<?= htmlspecialchars($v['vehicle_category']) ?>"
+                            <?= (isset($_POST['vehicle_id']) && (int)$_POST['vehicle_id'] === (int)$v['id']) ? 'selected' : '' ?>>
                         <?= htmlspecialchars($v['registration_number']) ?>
                         — <?= htmlspecialchars($v['manufacturer'] . ' ' . $v['model_name']) ?>
                         (<?= htmlspecialchars($v['vehicle_category']) ?>)
-                        [<?= htmlspecialchars($v['status']) ?>]
-                        <?php if ($isAdmin): ?>
-                            — <?= htmlspecialchars($v['depot_name']) ?>
-                        <?php endif; ?>
                     </option>
                 <?php endforeach; ?>
             </select>
-            <div class="hint">
-                Vehicles currently Under Maintenance, Out of Service, or Retired are excluded.
-            </div>
         </div>
 
+        <!-- Required Certs Display -->
+        <div id="req-certs-box" style="background:#f5f7fa; padding:12px; border-radius:8px; margin-bottom:20px; display:none;">
+            <strong>Required Certifications for this vehicle:</strong>
+            <span id="req-certs-list" style="color:#1a73e8; font-weight:600;"></span>
+        </div>
+
+        <!-- Step 2: Select Driver -->
         <div class="form-group">
-            <label for="driver_id">👤 Driver</label>
-            <select name="driver_id" id="driver_id" required>
-                <option value="">— Select a driver —</option>
-                <?php foreach ($drivers as $d): ?>
-                    <option value="<?= (int) $d['id'] ?>"
-                        <?= (isset($_POST['driver_id']) && (int)$_POST['driver_id'] === (int)$d['id']) ? 'selected' : '' ?>>
-                        <?= htmlspecialchars($d['full_name']) ?>
-                        — <?= htmlspecialchars($d['license_type']) ?>
-                        (license expires: <?= htmlspecialchars($d['license_expiry']) ?>)
-                        <?php if ($isAdmin): ?>
-                            — <?= htmlspecialchars($d['depot_name']) ?>
-                        <?php endif; ?>
-                    </option>
-                <?php endforeach; ?>
+            <label for="driver_id">👤 Step 2: Select Qualified Driver</label>
+            <select name="driver_id" id="driver_id" required disabled>
+                <option value="">— Select a vehicle first —</option>
             </select>
-            <div class="hint">
-                Only active drivers with non-expired licenses are listed.
-                Certification requirements will be checked on submission.
-            </div>
+            <div class="hint" id="driver-hint">Only drivers holding the required certifications will appear here.</div>
         </div>
 
         <div style="display:flex; gap:12px; margin-top:24px;">
-            <button type="submit" class="btn btn-primary">
-                ✅ Confirm Assignment
-            </button>
-            <a href="<?= base_url() ?>/assignments/list.php" class="btn btn-secondary">
-                Cancel
-            </a>
+            <button type="submit" class="btn btn-primary">✅ Confirm Assignment</button>
+            <a href="<?= base_url() ?>/assignments/list.php" class="btn btn-secondary">Cancel</a>
         </div>
     </form>
 </div>
 
-<!-- ── How it works (for the team — reference documentation) ── -->
-<div class="card">
-    <h2>📋 How This Assignment Works</h2>
-    <p class="subtitle">The validation logic executed on submission</p>
-    <table class="data-table">
-        <thead>
-            <tr>
-                <th style="width:60px;">Step</th>
-                <th>Check</th>
-                <th>Rejects if...</th>
-            </tr>
-        </thead>
-        <tbody>
-            <tr>
-                <td><strong>1</strong></td>
-                <td>Vehicle status</td>
-                <td>Vehicle is Under Maintenance, Out of Service, or Retired</td>
-            </tr>
-            <tr>
-                <td><strong>2</strong></td>
-                <td>Driver employment</td>
-                <td>Driver is not Active (On Leave, Inactive)</td>
-            </tr>
-            <tr>
-                <td><strong>3</strong></td>
-                <td>Driver license</td>
-                <td>License expiry date has passed</td>
-            </tr>
-            <tr>
-                <td><strong>4</strong></td>
-                <td>Certification matrix</td>
-                <td>Driver lacks any certification required for the vehicle's category,
-                    or the certification has expired</td>
-            </tr>
-            <tr>
-                <td><strong>5</strong></td>
-                <td>Close old assignment</td>
-                <td>(always succeeds — may close 0 or 1 existing assignment)</td>
-            </tr>
-            <tr>
-                <td><strong>6</strong></td>
-                <td>Insert + update</td>
-                <td>Create new assignment row, set vehicle status to Active</td>
-            </tr>
-        </tbody>
-    </table>
-    <p style="margin-top:12px; color:#757575; font-size:0.85rem;">
-        All 6 steps run inside a single database transaction. If any step fails,
-        all changes are rolled back — no partial assignment is ever left in the database.
-    </p>
-</div>
+<script>
+// Data from PHP
+const categoryReqs = <?= json_encode($categoryReqs) ?>;
+const driverCerts = <?= json_encode($driverCerts) ?>;
+const certNames = <?= json_encode($certNames) ?>;
+const allDrivers = <?= json_encode($drivers) ?>;
+
+document.getElementById('vehicle_id').addEventListener('change', function() {
+    const vehicleSelect = this;
+    const driverSelect = document.getElementById('driver_id');
+    const reqCertsBox = document.getElementById('req-certs-box');
+    const reqCertsList = document.getElementById('req-certs-list');
+    const driverHint = document.getElementById('driver-hint');
+    
+    const selectedOption = vehicleSelect.options[vehicleSelect.selectedIndex];
+    const category = selectedOption.getAttribute('data-category');
+    
+    // Reset driver dropdown
+    driverSelect.innerHTML = '<option value="">— Select a driver —</option>';
+    
+    if (!vehicleSelect.value) {
+        driverSelect.disabled = true;
+        driverSelect.innerHTML = '<option value="">— Select a vehicle first —</option>';
+        reqCertsBox.style.display = 'none';
+        return;
+    }
+    
+    // Find required certs for this category
+    const reqCerts = categoryReqs.filter(r => r.vehicle_category === category).map(r => r.certification_id);
+    
+    // Display required certs
+    if (reqCerts.length > 0) {
+        const names = reqCerts.map(id => certNames[id] || 'Unknown').join(', ');
+        reqCertsList.textContent = names;
+        reqCertsBox.style.display = 'block';
+    } else {
+        reqCertsList.textContent = 'None required';
+        reqCertsBox.style.display = 'block';
+    }
+    
+    // Filter drivers
+    const qualifiedDrivers = [];
+    const today = new Date().toISOString().slice(0, 10);
+    
+    allDrivers.forEach(driver => {
+        let isQualified = true;
+        
+        reqCerts.forEach(certId => {
+            // Check if driver has this cert
+            const hasCert = driverCerts.some(dc => 
+                dc.driver_id == driver.id && 
+                dc.certification_id == certId
+            );
+            if (!hasCert) {
+                isQualified = false;
+            }
+        });
+        
+        if (isQualified) {
+            qualifiedDrivers.push(driver);
+        }
+    });
+    
+    // Populate driver dropdown
+    if (qualifiedDrivers.length > 0) {
+        driverSelect.disabled = false;
+        qualifiedDrivers.forEach(driver => {
+            const opt = document.createElement('option');
+            opt.value = driver.id;
+            opt.textContent = driver.full_name + ' — ' + driver.license_type;
+            driverSelect.appendChild(opt);
+        });
+        driverHint.textContent = qualifiedDrivers.length + ' qualified driver(s) available.';
+        driverHint.style.color = '#2e7d32';
+    } else {
+        driverSelect.disabled = true;
+        driverSelect.innerHTML = '<option value="">No qualified drivers available</option>';
+        driverHint.textContent = 'No active drivers hold the required certifications for this vehicle category.';
+        driverHint.style.color = '#c62828';
+    }
+});
+
+// Trigger change on page load if a vehicle was already selected (e.g., form validation error)
+window.addEventListener('DOMContentLoaded', function() {
+    const vehicleSelect = document.getElementById('vehicle_id');
+    if (vehicleSelect.value) {
+        vehicleSelect.dispatchEvent(new Event('change'));
+    }
+});
+</script>
 
 <?php require BASE_PATH . '/includes/footer.php'; ?>
