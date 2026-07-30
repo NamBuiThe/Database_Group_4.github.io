@@ -2,80 +2,111 @@
 /**
  * assignments/list.php — View current vehicle assignments.
  *
- * Use Case: UC-A1 (supporting view — "View current assignments")
- * Access:   Admin, Fleet Safety Staff
- *
- * Shows:
- *   - Current assignments (end_date IS NULL)
- *   - Assignment history (end_date IS NOT NULL) — optional, below
- *   - "New Assignment" button → assign.php
- *   - "End Assignment" button per row → POST to this same page
+ * Fixed:
+ * - "End Assignment" now uses PRG (Post-Redirect-Get) pattern
+ * - Success/error messages passed via session flash
+ * - End date uses selected date (not forced to today)
  */
 
 require_once dirname(__DIR__) . '/config.php';
 require_once BASE_PATH . '/includes/auth.php';
-require_once BASE_PATH . '/includes/header.php';
 
 require_fleet_safety();
 
-$depotId  = current_depot_id();
-$isAdmin  = is_admin();
-$message  = '';
-$msgType  = '';
-
-// ── Handle "End Assignment" action ──
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'end_assignment') {
-    $assignmentId = (int) ($_POST['assignment_id'] ?? 0);
-
-    try {
-        $pdo->beginTransaction();
-
-        // Get the assignment + vehicle_id (verify it belongs to user's depot if not admin)
-        $stmt = $pdo->prepare(
-            'SELECT va.id, va.vehicle_id, va.end_date, v.depot_id
-             FROM Vehicle_Assignments va
-             JOIN Vehicle v ON va.vehicle_id = v.id
-             WHERE va.id = ?'
-        );
-        $stmt->execute([$assignmentId]);
-        $assignment = $stmt->fetch();
-
-        if (!$assignment) {
-            throw new Exception('Assignment not found.');
-        }
-        if ($assignment['end_date'] !== null) {
-            throw new Exception('This assignment has already ended.');
-        }
-        if (!$isAdmin && (int)$assignment['depot_id'] !== $depotId) {
-            throw new Exception('You can only manage assignments in your own depot.');
-        }
-
-        // End the assignment
-        $stmt = $pdo->prepare(
-            'UPDATE Vehicle_Assignments SET end_date = CURDATE() WHERE id = ?'
-        );
-        $stmt->execute([$assignmentId]);
-
-        // Set vehicle status back to 'Available'
-        $stmt = $pdo->prepare(
-            "UPDATE Vehicle SET status = 'Available' WHERE id = ?"
-        );
-        $stmt->execute([$assignment['vehicle_id']]);
-
-        $pdo->commit();
-        $message = 'Assignment ended successfully. Vehicle is now Available.';
-        $msgType = 'success';
-    } catch (Exception $e) {
-        $pdo->rollBack();
-        $message = $e->getMessage();
-        $msgType = 'error';
-    }
+// Start session for flash messages if not already started
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
 }
 
-// ── Fetch current assignments ──
+$depotId  = current_depot_id();
+$isAdmin  = is_admin();
+
+// ═══════════════════════════════════════════════════════════════
+//  POST HANDLER — End Assignment (with PRG pattern)
+// ═══════════════════════════════════════════════════════════════
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $action = $_POST['action'] ?? '';
+    
+    if ($action === 'end_assignment') {
+        $assignmentId = (int) ($_POST['assignment_id'] ?? 0);
+        $endDate      = $_POST['end_date'] ?? date('Y-m-d');
+
+        try {
+            $pdo->beginTransaction();
+
+            // Get the assignment + vehicle_id (verify depot)
+            $stmt = $pdo->prepare(
+                'SELECT va.id, va.vehicle_id, va.end_date, v.depot_id, v.registration_number
+                 FROM Vehicle_Assignments va
+                 JOIN Vehicle v ON va.vehicle_id = v.id
+                 WHERE va.id = ?'
+            );
+            $stmt->execute([$assignmentId]);
+            $assignment = $stmt->fetch();
+
+            if (!$assignment) {
+                throw new Exception('Assignment not found.');
+            }
+            if ($assignment['end_date'] !== null) {
+                throw new Exception('This assignment has already ended.');
+            }
+            if (!$isAdmin && (int)$assignment['depot_id'] !== $depotId) {
+                throw new Exception('You can only manage assignments in your own depot.');
+            }
+
+            // End the assignment
+            $stmt = $pdo->prepare(
+                'UPDATE Vehicle_Assignments SET end_date = ? WHERE id = ?'
+            );
+            $stmt->execute([$endDate, $assignmentId]);
+
+            // Set vehicle status back to 'Available'
+            $stmt = $pdo->prepare(
+                "UPDATE Vehicle SET status = 'Available' WHERE id = ?"
+            );
+            $stmt->execute([$assignment['vehicle_id']]);
+
+            $pdo->commit();
+
+            // Flash success message
+            $_SESSION['flash'] = [
+                'type' => 'success',
+                'msg'  => "Assignment for vehicle <strong>{$assignment['registration_number']}</strong> ended on <strong>{$endDate}</strong>. Vehicle is now Available."
+            ];
+
+        } catch (Exception $e) {
+            $pdo->rollBack();
+            $_SESSION['flash'] = [
+                'type' => 'error',
+                'msg'  => 'Error: ' . $e->getMessage()
+            ];
+        }
+    }
+
+    // PRG: Redirect to the same page via GET to prevent re-submission
+    $baseUrl = base_url();
+    header("Location: {$baseUrl}/assignments/list.php");
+    exit;
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  GET HANDLER — Display page
+// ═══════════════════════════════════════════════════════════════
+
+// Check for flash message from previous POST
+$flashMessage = '';
+$flashType    = '';
+if (isset($_SESSION['flash'])) {
+    $flashMessage = $_SESSION['flash']['msg'];
+    $flashType    = $_SESSION['flash']['type'];
+    unset($_SESSION['flash']);
+}
+
+// Fetch current assignments
 $currentSql = "
     SELECT  va.id           AS assignment_id,
             va.start_date,
+            va.end_date,
             v.id            AS vehicle_id,
             v.registration_number,
             v.status         AS vehicle_status,
@@ -95,21 +126,17 @@ $currentSql = "
     JOIN    Depot          dep ON v.depot_id     = dep.id
     WHERE   va.end_date IS NULL
 ";
-
 $params = [];
-
 if (!$isAdmin) {
     $currentSql .= " AND v.depot_id = ?";
     $params[] = $depotId;
 }
-
 $currentSql .= " ORDER BY va.start_date DESC";
-
 $stmt = $pdo->prepare($currentSql);
 $stmt->execute($params);
 $currentAssignments = $stmt->fetchAll();
 
-// ── Fetch assignment history (last 15) ──
+// Fetch assignment history (last 15)
 $historySql = "
     SELECT  va.id           AS assignment_id,
             va.start_date,
@@ -126,24 +153,19 @@ $historySql = "
     JOIN    Depot          dep ON v.depot_id     = dep.id
     WHERE   va.end_date IS NOT NULL
 ";
-
 $historyParams = [];
-
 if (!$isAdmin) {
     $historySql .= " AND v.depot_id = ?";
     $historyParams[] = $depotId;
 }
-
 $historySql .= " ORDER BY va.end_date DESC LIMIT 15";
-
 $stmt = $pdo->prepare($historySql);
 $stmt->execute($historyParams);
 $historyAssignments = $stmt->fetchAll();
 
-// ── Fetch available vehicles for sidebar summary ──
+// Fetch available vehicles for sidebar
 $availSql = "
-    SELECT v.id, v.registration_number, vm.model_name, vm.vehicle_category,
-           v.status
+    SELECT v.id, v.registration_number, vm.model_name, vm.vehicle_category, v.status
     FROM Vehicle v
     JOIN Vehicle_Models vm ON v.model_id = vm.id
     WHERE v.status IN ('Available', 'Awaiting Inspection')
@@ -154,17 +176,15 @@ if (!$isAdmin) {
     $availParams[] = $depotId;
 }
 $availSql .= " ORDER BY v.registration_number LIMIT 10";
-
 $stmt = $pdo->prepare($availSql);
 $stmt->execute($availParams);
 $availableVehicles = $stmt->fetchAll();
 
-// ── Fetch eligible drivers for sidebar summary ──
+// Fetch eligible drivers for sidebar
 $eligSql = "
     SELECT id, full_name, license_type, license_expiry
     FROM Driver
-    WHERE employment_status = 'Active'
-      AND license_expiry >= CURDATE()
+    WHERE employment_status = 'Active' AND license_expiry >= CURDATE()
 ";
 $eligParams = [];
 if (!$isAdmin) {
@@ -172,15 +192,20 @@ if (!$isAdmin) {
     $eligParams[] = $depotId;
 }
 $eligSql .= " ORDER BY full_name LIMIT 10";
-
 $stmt = $pdo->prepare($eligSql);
 $stmt->execute($eligParams);
 $eligibleDrivers = $stmt->fetchAll();
+
+$today = date('Y-m-d');
+
+// Now include header (after all logic is done)
+require_once BASE_PATH . '/includes/header.php';
 ?>
 
-<?php if ($message): ?>
-    <div class="alert alert-<?= htmlspecialchars($msgType) ?>">
-        <?= htmlspecialchars($message) ?>
+<!-- Flash message -->
+<?php if ($flashMessage): ?>
+    <div class="alert alert-<?= htmlspecialchars($flashType) ?>">
+        <?= $flashMessage ?>
     </div>
 <?php endif; ?>
 
@@ -198,9 +223,7 @@ $eligibleDrivers = $stmt->fetchAll();
                 <?php endif; ?>
             </p>
         </div>
-        <a href="<?= base_url() ?>/assignments/assign.php" class="btn btn-success">
-            + New Assignment
-        </a>
+        <a href="<?= base_url() ?>/assignments/assign.php" class="btn btn-success">+ New Assignment</a>
     </div>
 
     <?php if (empty($currentAssignments)): ?>
@@ -208,9 +231,7 @@ $eligibleDrivers = $stmt->fetchAll();
             <div class="icon">🚗</div>
             <p>No active assignments found.</p>
             <p style="margin-top:10px;">
-                <a href="<?= base_url() ?>/assignments/assign.php" class="btn btn-primary btn-sm">
-                    Create one now
-                </a>
+                <a href="<?= base_url() ?>/assignments/assign.php" class="btn btn-primary btn-sm">Create one now</a>
             </p>
         </div>
     <?php else: ?>
@@ -222,7 +243,7 @@ $eligibleDrivers = $stmt->fetchAll();
                     <th>Driver</th>
                     <th>Depot</th>
                     <th>Started</th>
-                    <th>Actions</th>
+                    <th>End Assignment</th>
                 </tr>
             </thead>
             <tbody>
@@ -230,18 +251,12 @@ $eligibleDrivers = $stmt->fetchAll();
                     <tr>
                         <td>
                             <strong><?= htmlspecialchars($row['registration_number']) ?></strong>
-                            <div class="vehicle-info">
-                                <?= htmlspecialchars($row['vehicle_category']) ?>
-                            </div>
+                            <div class="vehicle-info"><?= htmlspecialchars($row['vehicle_category']) ?></div>
                         </td>
-                        <td>
-                            <?= htmlspecialchars($row['manufacturer'] . ' ' . $row['model_name']) ?>
-                        </td>
+                        <td><?= htmlspecialchars($row['manufacturer'] . ' ' . $row['model_name']) ?></td>
                         <td>
                             <strong><?= htmlspecialchars($row['driver_name']) ?></strong>
-                            <div class="vehicle-info">
-                                <?= htmlspecialchars($row['license_type']) ?>
-                            </div>
+                            <div class="vehicle-info"><?= htmlspecialchars($row['license_type']) ?></div>
                         </td>
                         <td>
                             <?= htmlspecialchars($row['depot_name']) ?>
@@ -249,12 +264,12 @@ $eligibleDrivers = $stmt->fetchAll();
                         </td>
                         <td><?= htmlspecialchars($row['start_date']) ?></td>
                         <td>
-                            <form method="post" style="display:inline;"
-                                  onsubmit="return confirm('End this assignment? Vehicle will be set to Available.');">
+                            <form method="post" style="display:inline;">
                                 <input type="hidden" name="action" value="end_assignment">
-                                <input type="hidden" name="assignment_id"
-                                       value="<?= (int) $row['assignment_id'] ?>">
-                                <button type="submit" class="btn btn-danger btn-sm">
+                                <input type="hidden" name="assignment_id" value="<?= (int) $row['assignment_id'] ?>">
+                                <input type="hidden" name="end_date" value="<?= $today ?>">
+                                <button type="submit" class="btn btn-danger btn-sm"
+                                        onclick="return confirm('End this assignment for vehicle <?= htmlspecialchars($row['registration_number']) ?>?\n\nThe vehicle will be set to Available.');">
                                     End
                                 </button>
                             </form>
@@ -268,7 +283,6 @@ $eligibleDrivers = $stmt->fetchAll();
 
 <!-- ── Sidebar: Available Vehicles & Eligible Drivers ── -->
 <div style="display:grid; grid-template-columns:1fr 1fr; gap:24px;">
-    <!-- Available Vehicles -->
     <div class="card">
         <h2>🚚 Available Vehicles</h2>
         <p class="subtitle">Vehicles ready for assignment</p>
@@ -277,11 +291,7 @@ $eligibleDrivers = $stmt->fetchAll();
         <?php else: ?>
             <table class="data-table">
                 <thead>
-                    <tr>
-                        <th>Reg. Number</th>
-                        <th>Model</th>
-                        <th>Status</th>
-                    </tr>
+                    <tr><th>Reg. Number</th><th>Model</th><th>Status</th></tr>
                 </thead>
                 <tbody>
                     <?php foreach ($availableVehicles as $v): ?>
@@ -289,13 +299,8 @@ $eligibleDrivers = $stmt->fetchAll();
                             <td><strong><?= htmlspecialchars($v['registration_number']) ?></strong></td>
                             <td><?= htmlspecialchars($v['model_name']) ?></td>
                             <td>
-                                <?php
-                                $badgeClass = 'badge-available';
-                                if ($v['status'] === 'Awaiting Inspection') $badgeClass = 'badge-inspection';
-                                ?>
-                                <span class="badge <?= $badgeClass ?>">
-                                    <?= htmlspecialchars($v['status']) ?>
-                                </span>
+                                <?php $badgeClass = $v['status'] === 'Awaiting Inspection' ? 'badge-inspection' : 'badge-available'; ?>
+                                <span class="badge <?= $badgeClass ?>"><?= htmlspecialchars($v['status']) ?></span>
                             </td>
                         </tr>
                     <?php endforeach; ?>
@@ -304,7 +309,6 @@ $eligibleDrivers = $stmt->fetchAll();
         <?php endif; ?>
     </div>
 
-    <!-- Eligible Drivers -->
     <div class="card">
         <h2>👤 Eligible Drivers</h2>
         <p class="subtitle">Active drivers with valid licenses</p>
@@ -313,11 +317,7 @@ $eligibleDrivers = $stmt->fetchAll();
         <?php else: ?>
             <table class="data-table">
                 <thead>
-                    <tr>
-                        <th>Name</th>
-                        <th>License</th>
-                        <th>Expires</th>
-                    </tr>
+                    <tr><th>Name</th><th>License</th><th>Expires</th></tr>
                 </thead>
                 <tbody>
                     <?php foreach ($eligibleDrivers as $d): ?>
@@ -327,8 +327,8 @@ $eligibleDrivers = $stmt->fetchAll();
                             <td>
                                 <?php
                                 $expiryDate = new DateTime($d['license_expiry']);
-                                $today      = new DateTime();
-                                $daysLeft   = $today->diff($expiryDate)->days;
+                                $todayObj   = new DateTime();
+                                $daysLeft   = $todayObj->diff($expiryDate)->days;
                                 $expiring   = $daysLeft <= 30;
                                 ?>
                                 <span style="color: <?= $expiring ? '#e65100' : '#424242' ?>;">

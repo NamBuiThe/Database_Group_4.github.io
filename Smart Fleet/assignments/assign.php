@@ -2,10 +2,12 @@
 /**
  * assignments/assign.php — UC-A1: Assign a driver to a vehicle.
  *
- * Improvements:
- * 1. Strict depot isolation (non-admins only see their depot's vehicles/drivers)
- * 2. Sequential selection (select vehicle first, driver list filters automatically)
- * 3. Displays required certifications for the selected vehicle category
+ * Now supports:
+ * - Start date (defaults to today)
+ * - Optional end date (leave blank for ongoing assignment)
+ * - Depot isolation (non-admins only see their depot)
+ * - Sequential selection (select vehicle first, driver list filters)
+ * - Required certifications display
  */
 
 require_once dirname(__DIR__) . '/config.php';
@@ -25,10 +27,17 @@ $msgType  = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $vehicleId = (int) ($_POST['vehicle_id'] ?? 0);
     $driverId  = (int) ($_POST['driver_id']  ?? 0);
+    $startDate = $_POST['start_date'] ?? date('Y-m-d');
+    $endDate   = $_POST['end_date']   ?? '';  // empty = ongoing
 
     $errors = [];
     if ($vehicleId <= 0) $errors[] = 'Please select a vehicle.';
     if ($driverId  <= 0) $errors[] = 'Please select a driver.';
+
+    // Validate dates
+    if ($endDate !== '' && $endDate < $startDate) {
+        $errors[] = 'End date cannot be before start date.';
+    }
 
     if (empty($errors)) {
         try {
@@ -95,20 +104,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             // STEP 4: Close any open assignment for this vehicle
-            $stmt = $pdo->prepare('UPDATE Vehicle_Assignments SET end_date = CURDATE() WHERE vehicle_id = ? AND end_date IS NULL');
-            $stmt->execute([$vehicleId]);
+            $stmt = $pdo->prepare('UPDATE Vehicle_Assignments SET end_date = ? WHERE vehicle_id = ? AND end_date IS NULL');
+            $stmt->execute([$startDate, $vehicleId]);
 
-            // STEP 5: Create new assignment
-            $stmt = $pdo->prepare('INSERT INTO Vehicle_Assignments (vehicle_id, driver_id, start_date, end_date) VALUES (?, ?, CURDATE(), NULL)');
-            $stmt->execute([$vehicleId, $driverId]);
+            // STEP 5: Create new assignment (with optional end_date)
+            if ($endDate === '') {
+                $stmt = $pdo->prepare(
+                    'INSERT INTO Vehicle_Assignments (vehicle_id, driver_id, start_date, end_date) VALUES (?, ?, ?, NULL)'
+                );
+                $stmt->execute([$vehicleId, $driverId, $startDate]);
+            } else {
+                $stmt = $pdo->prepare(
+                    'INSERT INTO Vehicle_Assignments (vehicle_id, driver_id, start_date, end_date) VALUES (?, ?, ?, ?)'
+                );
+                $stmt->execute([$vehicleId, $driverId, $startDate, $endDate]);
+            }
 
-            // STEP 6: Update vehicle status to 'Active'
-            $stmt = $pdo->prepare("UPDATE Vehicle SET status = 'Active' WHERE id = ?");
-            $stmt->execute([$vehicleId]);
+            // STEP 6: Update vehicle status to 'Active' (only if start_date is today or past)
+            if ($startDate <= date('Y-m-d')) {
+                $stmt = $pdo->prepare("UPDATE Vehicle SET status = 'Active' WHERE id = ?");
+                $stmt->execute([$vehicleId]);
+            }
 
             $pdo->commit();
 
-            $message = "✅ Driver <strong>{$driver['full_name']}</strong> assigned to vehicle <strong>{$vehicle['registration_number']}</strong>.";
+            $endDateMsg = $endDate ? " (until {$endDate})" : ' (ongoing)';
+            $message = "✅ Driver <strong>{$driver['full_name']}</strong> assigned to vehicle <strong>{$vehicle['registration_number']}</strong> starting <strong>{$startDate}</strong>{$endDateMsg}.";
             $msgType = 'success';
 
         } catch (Exception $e) {
@@ -146,7 +167,7 @@ $stmt = $pdo->prepare($vehicleSql);
 $stmt->execute($vehicleParams);
 $vehicles = $stmt->fetchAll();
 
-// 2. All eligible drivers (we'll filter via JS based on vehicle selection)
+// 2. All eligible drivers
 $driverSql = "
     SELECT id, full_name, license_type, license_expiry
     FROM Driver
@@ -162,12 +183,8 @@ $stmt = $pdo->prepare($driverSql);
 $stmt->execute($driverParams);
 $drivers = $stmt->fetchAll();
 
-// 3. Fetch all driver certifications (to check qualifications in JS)
-$certSql = "
-    SELECT dc.driver_id, dc.certification_id
-    FROM Driver_Certifications dc
-    WHERE dc.expiry_date >= CURDATE()
-";
+// 3. Fetch all driver certifications
+$certSql = "SELECT dc.driver_id, dc.certification_id FROM Driver_Certifications dc WHERE dc.expiry_date >= CURDATE()";
 $certParams = [];
 if (!$isAdmin) {
     $certSql .= " AND dc.driver_id IN (SELECT id FROM Driver WHERE depot_id = ?)";
@@ -182,16 +199,14 @@ $categoryReqs = $pdo->query("SELECT vehicle_category, certification_id FROM Cate
 
 // 5. Fetch certification names
 $certNames = $pdo->query("SELECT id, certification_name FROM Certifications")->fetchAll(PDO::FETCH_KEY_PAIR);
+
+$today = date('Y-m-d');
 ?>
 
-<!-- ── Success / Error message ── -->
 <?php if ($message): ?>
-    <div class="alert alert-<?= htmlspecialchars($msgType) ?>">
-        <?= $message ?>
-    </div>
+    <div class="alert alert-<?= htmlspecialchars($msgType) ?>"><?= $message ?></div>
 <?php endif; ?>
 
-<!-- ── Assignment Form ── -->
 <div class="card">
     <h1>Assign Driver to Vehicle</h1>
     <p class="subtitle">
@@ -234,6 +249,19 @@ $certNames = $pdo->query("SELECT id, certification_name FROM Certifications")->f
             <div class="hint" id="driver-hint">Only drivers holding the required certifications will appear here.</div>
         </div>
 
+        <!-- Step 3: Dates -->
+        <div style="display:flex; gap:15px;">
+            <div class="form-group" style="flex:1;">
+                <label for="start_date">📅 Start Date</label>
+                <input type="date" name="start_date" id="start_date" value="<?= htmlspecialchars($_POST['start_date'] ?? $today) ?>" required>
+            </div>
+            <div class="form-group" style="flex:1;">
+                <label for="end_date">📅 End Date (optional)</label>
+                <input type="date" name="end_date" id="end_date" value="<?= htmlspecialchars($_POST['end_date'] ?? '') ?>">
+                <div class="hint">Leave blank for an ongoing assignment with no fixed end date.</div>
+            </div>
+        </div>
+
         <div style="display:flex; gap:12px; margin-top:24px;">
             <button type="submit" class="btn btn-primary">✅ Confirm Assignment</button>
             <a href="<?= base_url() ?>/assignments/list.php" class="btn btn-secondary">Cancel</a>
@@ -242,7 +270,6 @@ $certNames = $pdo->query("SELECT id, certification_name FROM Certifications")->f
 </div>
 
 <script>
-// Data from PHP
 const categoryReqs = <?= json_encode($categoryReqs) ?>;
 const driverCerts = <?= json_encode($driverCerts) ?>;
 const certNames = <?= json_encode($certNames) ?>;
@@ -258,7 +285,6 @@ document.getElementById('vehicle_id').addEventListener('change', function() {
     const selectedOption = vehicleSelect.options[vehicleSelect.selectedIndex];
     const category = selectedOption.getAttribute('data-category');
     
-    // Reset driver dropdown
     driverSelect.innerHTML = '<option value="">— Select a driver —</option>';
     
     if (!vehicleSelect.value) {
@@ -268,10 +294,8 @@ document.getElementById('vehicle_id').addEventListener('change', function() {
         return;
     }
     
-    // Find required certs for this category
     const reqCerts = categoryReqs.filter(r => r.vehicle_category === category).map(r => r.certification_id);
     
-    // Display required certs
     if (reqCerts.length > 0) {
         const names = reqCerts.map(id => certNames[id] || 'Unknown').join(', ');
         reqCertsList.textContent = names;
@@ -281,30 +305,18 @@ document.getElementById('vehicle_id').addEventListener('change', function() {
         reqCertsBox.style.display = 'block';
     }
     
-    // Filter drivers
     const qualifiedDrivers = [];
-    const today = new Date().toISOString().slice(0, 10);
-    
     allDrivers.forEach(driver => {
         let isQualified = true;
-        
         reqCerts.forEach(certId => {
-            // Check if driver has this cert
             const hasCert = driverCerts.some(dc => 
-                dc.driver_id == driver.id && 
-                dc.certification_id == certId
+                dc.driver_id == driver.id && dc.certification_id == certId
             );
-            if (!hasCert) {
-                isQualified = false;
-            }
+            if (!hasCert) isQualified = false;
         });
-        
-        if (isQualified) {
-            qualifiedDrivers.push(driver);
-        }
+        if (isQualified) qualifiedDrivers.push(driver);
     });
     
-    // Populate driver dropdown
     if (qualifiedDrivers.length > 0) {
         driverSelect.disabled = false;
         qualifiedDrivers.forEach(driver => {
@@ -323,12 +335,9 @@ document.getElementById('vehicle_id').addEventListener('change', function() {
     }
 });
 
-// Trigger change on page load if a vehicle was already selected (e.g., form validation error)
 window.addEventListener('DOMContentLoaded', function() {
     const vehicleSelect = document.getElementById('vehicle_id');
-    if (vehicleSelect.value) {
-        vehicleSelect.dispatchEvent(new Event('change'));
-    }
+    if (vehicleSelect.value) vehicleSelect.dispatchEvent(new Event('change'));
 });
 </script>
 
