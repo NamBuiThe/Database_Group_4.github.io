@@ -8,6 +8,9 @@ $message = '';
 $msgType = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!hash_equals($_SESSION['csrf_token'] ?? '', $_POST['csrf_token'] ?? '')) {
+        die('Invalid request.');
+    }
     $activityId = (int)$_POST['activity_id'];
     $partId = (int)$_POST['part_id'];
     $quantityUsed = (int)$_POST['quantity_used'];
@@ -76,6 +79,8 @@ require BASE_PATH . '/includes/header.php';
 <div class="card">
     <h1>Add Part to Maintenance Activity</h1>
     <form method="post" action="">
+        <?php $_SESSION['csrf_token'] = $_SESSION['csrf_token'] ?? bin2hex(random_bytes(32)); ?>
+        <input type="hidden" name="csrf_token" value="<?= $_SESSION['csrf_token'] ?>">
         <div class="form-group">
             <label>Select Maintenance Activity</label>
             <select name="activity_id" required>
