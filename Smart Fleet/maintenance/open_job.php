@@ -27,6 +27,10 @@ $certMap = [
 ];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!hash_equals($_SESSION['csrf_token'] ?? '', $_POST['csrf_token'] ?? '')) {
+        die('Invalid request.');
+    }
+
     $vehicleId  = (int)$_POST['vehicle_id'];
     $workshopId = (int)$_POST['workshop_id'];
     $activityType = $_POST['activity_type'] ?? '';
@@ -102,6 +106,8 @@ require BASE_PATH . '/includes/header.php';
 <div class="card">
     <h1>Open a New Maintenance Job</h1>
     <form method="post" action="">
+        <?php $_SESSION['csrf_token'] = $_SESSION['csrf_token'] ?? bin2hex(random_bytes(32)); ?>
+        <input type="hidden" name="csrf_token" value="<?= $_SESSION['csrf_token'] ?>">
         <div class="form-group">
             <label>Select Vehicle</label>
             <select name="vehicle_id" required>
