@@ -2,9 +2,11 @@
 /**
  * assignments/assign.php — UC-A1: Assign a driver to a vehicle.
  *
- * Now supports:
- * - Start date (defaults to today)
- * - Optional end date (leave blank for ongoing assignment)
+ * Features:
+ * - CSRF token protection (security update)
+ * - Start date is locked to today (readonly field)
+ * - End date is still optional (with Clear button)
+ * - Drivers who already have an open assignment are excluded
  * - Depot isolation (non-admins only see their depot)
  * - Sequential selection (select vehicle first, driver list filters)
  * - Required certifications display
@@ -12,7 +14,6 @@
 
 require_once dirname(__DIR__) . '/config.php';
 require_once BASE_PATH . '/includes/auth.php';
-require_once BASE_PATH . '/includes/header.php';
 
 require_fleet_safety();
 
@@ -20,18 +21,21 @@ $depotId  = current_depot_id();
 $isAdmin  = is_admin();
 $message  = '';
 $msgType  = '';
+$today    = date('Y-m-d');
 
 // ═══════════════════════════════════════════════════════════════
 //  POST HANDLER — The Transaction
 // ═══════════════════════════════════════════════════════════════
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    // ── CSRF Token Validation (security update) ──
     if (!hash_equals($_SESSION['csrf_token'] ?? '', $_POST['csrf_token'] ?? '')) {
-    die('Invalid request.');
+        die('Invalid request.');
     }
+
     $vehicleId = (int) ($_POST['vehicle_id'] ?? 0);
     $driverId  = (int) ($_POST['driver_id']  ?? 0);
-    $startDate = $_POST['start_date'] ?? date('Y-m-d');
-    $endDate   = $_POST['end_date']   ?? '';  // empty = ongoing
+    $startDate = $today;  // Always today — no longer user-selectable
+    $endDate   = $_POST['end_date'] ?? '';  // empty = ongoing
 
     $errors = [];
     if ($vehicleId <= 0) $errors[] = 'Please select a vehicle.';
@@ -83,8 +87,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($driver['employment_status'] !== 'Active') {
                 throw new Exception("Driver {$driver['full_name']} is currently '{$driver['employment_status']}' and cannot be assigned.");
             }
-            if ($driver['license_expiry'] < date('Y-m-d')) {
+            if ($driver['license_expiry'] < $today) {
                 throw new Exception("Driver {$driver['full_name']}'s license expired on {$driver['license_expiry']}. Cannot assign until renewed.");
+            }
+
+            // Check driver isn't already assigned to another vehicle
+            $stmt = $pdo->prepare(
+                'SELECT COUNT(*) FROM Vehicle_Assignments 
+                 WHERE driver_id = ? AND end_date IS NULL'
+            );
+            $stmt->execute([$driverId]);
+            if ($stmt->fetchColumn() > 0) {
+                throw new Exception("Driver {$driver['full_name']} is already assigned to another vehicle.");
             }
 
             // STEP 3: Check certification requirements
@@ -123,16 +137,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt->execute([$vehicleId, $driverId, $startDate, $endDate]);
             }
 
-            // STEP 6: Update vehicle status to 'Active' (only if start_date is today or past)
-            if ($startDate <= date('Y-m-d')) {
-                $stmt = $pdo->prepare("UPDATE Vehicle SET status = 'Active' WHERE id = ?");
-                $stmt->execute([$vehicleId]);
-            }
+            // STEP 6: Update vehicle status to 'Active'
+            $stmt = $pdo->prepare("UPDATE Vehicle SET status = 'Active' WHERE id = ?");
+            $stmt->execute([$vehicleId]);
 
             $pdo->commit();
 
             $endDateMsg = $endDate ? " (until {$endDate})" : ' (ongoing)';
-            $message = "✅ Driver <strong>{$driver['full_name']}</strong> assigned to vehicle <strong>{$vehicle['registration_number']}</strong> starting <strong>{$startDate}</strong>{$endDateMsg}.";
+            $message = "✅ Driver <strong>{$driver['full_name']}</strong> assigned to vehicle <strong>{$vehicle['registration_number']}</strong> starting today{$endDateMsg}.";
             $msgType = 'success';
 
         } catch (Exception $e) {
@@ -150,7 +162,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 //  FETCH DROPDOWN DATA
 // ═══════════════════════════════════════════════════════════════
 
-// 1. Available vehicles
+// 1. Available vehicles (not assigned, not in maintenance)
 $vehicleSql = "
     SELECT v.id, v.registration_number, v.status,
            vm.model_name, vm.manufacturer, vm.vehicle_category,
@@ -159,6 +171,7 @@ $vehicleSql = "
     JOIN Vehicle_Models vm ON v.model_id = vm.id
     JOIN Depot dep ON v.depot_id = dep.id
     WHERE v.status NOT IN ('Under Maintenance', 'Out of Service', 'Retired')
+      AND v.id NOT IN (SELECT vehicle_id FROM Vehicle_Assignments WHERE end_date IS NULL)
 ";
 $vehicleParams = [];
 if (!$isAdmin) {
@@ -170,11 +183,12 @@ $stmt = $pdo->prepare($vehicleSql);
 $stmt->execute($vehicleParams);
 $vehicles = $stmt->fetchAll();
 
-// 2. All eligible drivers
+// 2. Eligible drivers (active, valid license, NOT currently assigned to any vehicle)
 $driverSql = "
     SELECT id, full_name, license_type, license_expiry
     FROM Driver
     WHERE employment_status = 'Active' AND license_expiry >= CURDATE()
+      AND id NOT IN (SELECT driver_id FROM Vehicle_Assignments WHERE end_date IS NULL)
 ";
 $driverParams = [];
 if (!$isAdmin) {
@@ -203,7 +217,10 @@ $categoryReqs = $pdo->query("SELECT vehicle_category, certification_id FROM Cate
 // 5. Fetch certification names
 $certNames = $pdo->query("SELECT id, certification_name FROM Certifications")->fetchAll(PDO::FETCH_KEY_PAIR);
 
-$today = date('Y-m-d');
+// Generate CSRF token (security update)
+$_SESSION['csrf_token'] = $_SESSION['csrf_token'] ?? bin2hex(random_bytes(32));
+
+require BASE_PATH . '/includes/header.php';
 ?>
 
 <?php if ($message): ?>
@@ -213,15 +230,16 @@ $today = date('Y-m-d');
 <div class="card">
     <h1>Assign Driver to Vehicle</h1>
     <p class="subtitle">
-        Select a vehicle first. The driver list will automatically filter to show only qualified drivers.
+        Select a vehicle first. Only qualified, available drivers will appear.
         <?php if (!$isAdmin): ?>
             Only vehicles and drivers from <strong><?= htmlspecialchars(current_depot_name()) ?></strong> are shown.
         <?php endif; ?>
     </p>
 
     <form method="post" action="">
-        <?php $_SESSION['csrf_token'] = $_SESSION['csrf_token'] ?? bin2hex(random_bytes(32)); ?>
+        <!-- CSRF Token (security update) -->
         <input type="hidden" name="csrf_token" value="<?= $_SESSION['csrf_token'] ?>">
+
         <!-- Step 1: Select Vehicle -->
         <div class="form-group">
             <label for="vehicle_id">🚚 Step 1: Select Vehicle</label>
@@ -241,7 +259,7 @@ $today = date('Y-m-d');
 
         <!-- Required Certs Display -->
         <div id="req-certs-box" style="background:#f5f7fa; padding:12px; border-radius:8px; margin-bottom:20px; display:none;">
-            <strong>Required Certifications for this vehicle:</strong>
+            <strong>Required Certifications:</strong>
             <span id="req-certs-list" style="color:#1a73e8; font-weight:600;"></span>
         </div>
 
@@ -251,19 +269,23 @@ $today = date('Y-m-d');
             <select name="driver_id" id="driver_id" required disabled>
                 <option value="">— Select a vehicle first —</option>
             </select>
-            <div class="hint" id="driver-hint">Only drivers holding the required certifications will appear here.</div>
+            <div class="hint" id="driver-hint">Only available drivers with the required certifications will appear.</div>
         </div>
 
         <!-- Step 3: Dates -->
         <div style="display:flex; gap:15px;">
             <div class="form-group" style="flex:1;">
                 <label for="start_date">📅 Start Date</label>
-                <input type="date" name="start_date" id="start_date" value="<?= htmlspecialchars($_POST['start_date'] ?? $today) ?>" required>
+                <input type="date" name="start_date" id="start_date" value="<?= $today ?>" readonly>
+                <div class="hint">Start date is always today.</div>
             </div>
             <div class="form-group" style="flex:1;">
-                <label for="end_date">📅 End Date (optional)</label>
-                <input type="date" name="end_date" id="end_date" value="<?= htmlspecialchars($_POST['end_date'] ?? '') ?>">
-                <div class="hint">Leave blank for an ongoing assignment with no fixed end date.</div>
+                <label for="end_date">📅 End Date (optional — leave blank for ongoing)</label>
+                <div style="display:flex; gap:8px;">
+                    <input type="date" name="end_date" id="end_date" value="<?= htmlspecialchars($_POST['end_date'] ?? '') ?>" min="<?= $today ?>" style="flex:1;">
+                    <button type="button" onclick="document.getElementById('end_date').value=''" class="btn btn-secondary btn-sm" style="white-space:nowrap;">Clear</button>
+                </div>
+                <div class="hint">Leave blank for an ongoing assignment. Click "Clear" if your browser auto-fills it.</div>
             </div>
         </div>
 
@@ -286,21 +308,21 @@ document.getElementById('vehicle_id').addEventListener('change', function() {
     const reqCertsBox = document.getElementById('req-certs-box');
     const reqCertsList = document.getElementById('req-certs-list');
     const driverHint = document.getElementById('driver-hint');
-    
+
     const selectedOption = vehicleSelect.options[vehicleSelect.selectedIndex];
     const category = selectedOption.getAttribute('data-category');
-    
+
     driverSelect.innerHTML = '<option value="">— Select a driver —</option>';
-    
+
     if (!vehicleSelect.value) {
         driverSelect.disabled = true;
         driverSelect.innerHTML = '<option value="">— Select a vehicle first —</option>';
         reqCertsBox.style.display = 'none';
         return;
     }
-    
+
     const reqCerts = categoryReqs.filter(r => r.vehicle_category === category).map(r => r.certification_id);
-    
+
     if (reqCerts.length > 0) {
         const names = reqCerts.map(id => certNames[id] || 'Unknown').join(', ');
         reqCertsList.textContent = names;
@@ -309,19 +331,19 @@ document.getElementById('vehicle_id').addEventListener('change', function() {
         reqCertsList.textContent = 'None required';
         reqCertsBox.style.display = 'block';
     }
-    
+
     const qualifiedDrivers = [];
     allDrivers.forEach(driver => {
         let isQualified = true;
         reqCerts.forEach(certId => {
-            const hasCert = driverCerts.some(dc => 
+            const hasCert = driverCerts.some(dc =>
                 dc.driver_id == driver.id && dc.certification_id == certId
             );
             if (!hasCert) isQualified = false;
         });
         if (isQualified) qualifiedDrivers.push(driver);
     });
-    
+
     if (qualifiedDrivers.length > 0) {
         driverSelect.disabled = false;
         qualifiedDrivers.forEach(driver => {
@@ -335,7 +357,7 @@ document.getElementById('vehicle_id').addEventListener('change', function() {
     } else {
         driverSelect.disabled = true;
         driverSelect.innerHTML = '<option value="">No qualified drivers available</option>';
-        driverHint.textContent = 'No active drivers hold the required certifications for this vehicle category.';
+        driverHint.textContent = 'No available drivers hold the required certifications.';
         driverHint.style.color = '#c62828';
     }
 });
