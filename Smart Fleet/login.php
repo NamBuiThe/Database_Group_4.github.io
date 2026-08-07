@@ -9,7 +9,9 @@ require_once __DIR__ . '/config.php';
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
-
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
 // If already logged in, go to dashboard
 if (isset($_SESSION['user_id'])) {
     header('Location: ' . rtrim(dirname($_SERVER['SCRIPT_NAME']), '/') . '/index.php');
@@ -19,6 +21,10 @@ if (isset($_SESSION['user_id'])) {
 $error = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $token = $_POST['csrf_token'] ?? '';
+    if (!hash_equals($_SESSION['csrf_token'], $token)) {
+        $error = 'Invalid request (CSRF token mismatch). Please refresh and try again.';
+    } else {
     $username = trim($_POST['username'] ?? '');
     $password = $_POST['password'] ?? '';
 
@@ -70,6 +76,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // In development: error_log($e->getMessage());
         }
     }
+}
 }
 ?>
 <!DOCTYPE html>
@@ -177,6 +184,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <?php endif; ?>
 
         <form method="post" action="">
+            <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($_SESSION['csrf_token']) ?>">
             <div class="form-group">
                 <label for="username">Username</label>
                 <input type="text" id="username" name="username"
